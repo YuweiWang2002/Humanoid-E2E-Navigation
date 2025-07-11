@@ -58,14 +58,15 @@ class ConvolutionHead_Nvidia(nn.Module):
                  num_filters=8, features_per_filter=4):
         """Initialize the object."""
         super(ConvolutionHead_Nvidia, self).__init__()
+        # wyw: (3, 66, 200) → (1, 480, 640)
 
         self.feature_layer = None
         self.filter_output = []
         self.linear = []
         self.num_filters = num_filters
         self.features_per_filter = features_per_filter
-        self.conv = nn.Sequential(  # (66, 200)
-            nn.Conv2d(3, 24, kernel_size=5, stride=2, bias=True),
+        self.conv = nn.Sequential(  # wyw: (66, 200) → (480, 640)
+            nn.Conv2d(1, 24, kernel_size=5, stride=2, bias=True),
             nn.ReLU(inplace=True),  # after (31,98)
 
             nn.Conv2d(24, 36, kernel_size=5, stride=2, bias=True),
@@ -196,6 +197,7 @@ class ConvolutionHead_ResNet(nn.Module):
                  num_filters=8, features_per_filter=4):
         """Initialize the object."""
         super(ConvolutionHead_ResNet, self).__init__()
+        # wyw: (3, 66, 200) → (1, 480, 640)
 
         self.feature_layer = None
         self.filter_output = []
@@ -205,8 +207,9 @@ class ConvolutionHead_ResNet(nn.Module):
 
         self.in_channel = 24
         # layer before Residual Block  input image (66,200)
+        # wyw: (66, 200) → (480, 640)
         self.conv1 = nn.Sequential(
-            nn.Conv2d(3, 24, kernel_size=5, stride=1, padding=1, bias=False),
+            nn.Conv2d(1, 24, kernel_size=5, stride=1, padding=1, bias=False),
             nn.BatchNorm2d(24),  # (64,198)
             nn.ReLU(inplace=True)
         )
@@ -353,13 +356,14 @@ class ConvolutionHead_AlexNet(nn.Module):
                  num_filters=8, features_per_filter=4):
         """Initialize the object."""
         super(ConvolutionHead_AlexNet, self).__init__()
+        # wyw: (3, 66, 200) → (1, 480, 640)
         self.feature_layer = None
         self.filter_output = []
         self.linear = []
         self.num_filters = num_filters
         self.features_per_filter = features_per_filter
-        self.conv = nn.Sequential(  # (66, 200)
-            nn.Conv2d(3, 24, kernel_size=5, stride=1, padding=2, bias=True),
+        self.conv = nn.Sequential(  # wyw: (66, 200) → (480, 640)
+            nn.Conv2d(1, 24, kernel_size=5, stride=1, padding=2, bias=True),
             # after (66,200)
             nn.BatchNorm2d(24),
             nn.ReLU(inplace=True),

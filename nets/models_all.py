@@ -15,12 +15,13 @@ class Convolution_Model(nn.Module):
     def __init__(self, img_dim, a_dim, use_cuda=True):
         """Initialize the object."""
         super(Convolution_Model, self).__init__()
+        # wyw: (3, 66, 200) → (1, 480, 640)
         self.device = torch.device("cuda"
                                    if use_cuda and torch.cuda.is_available()
                                    else "cpu")
         self.loss = nn.MSELoss(reduction='mean')
-        self.conv = nn.Sequential(  # input is (3,66,200)
-            nn.Conv2d(3, 24, kernel_size=5, stride=2, bias=True),  # (3198)
+        self.conv = nn.Sequential(  # wyw: input is (3,66,200) → (1, 480, 640)
+            nn.Conv2d(1, 24, kernel_size=5, stride=2, bias=True),  # (3198)
             nn.ReLU(inplace=True),
             nn.Conv2d(24, 36, kernel_size=5, stride=2, bias=True),  # (14,47)
             nn.ReLU(inplace=True),
@@ -39,8 +40,8 @@ class Convolution_Model(nn.Module):
         # need to adjust based on the input shape of the img.
         self.linear2 = nn.Linear(100, 50)   # extra added
         self.linear3 = nn.Linear(50, 10)    # extra added
-        self.linear4 = nn.Linear(10, a_dim)  # (10,1) predict only steering.
-        # self.a_dim = a_dim
+        self.linear4 = nn.Linear(10, 3)  # wyw: (10,1) predict only steering. -> (10,3) predict velx, vely, vel_yaw
+        self.a_dim = 3 # wyw: a_dim = 1 -> a_dim = 3
         self.channel = img_dim[0]
         self.height = img_dim[1]
         self.width = img_dim[2]
@@ -271,11 +272,15 @@ class LSTM_Model(nn.Module):
         self.lstm = nn.LSTM(self.input_size,
                             self.hidden_size,
                             batch_first=True)  # default: num_layers = 1
-        self.linear = nn.Linear(self.hidden_size, self.output)  # linear(64,3)
+        # wyw: linear(64,3) -> linear(64,3) 修改输出维度为3
+        self.linear = nn.Linear(self.hidden_size, 3)
+        # wyw: 修改LSTM输出维度为3
+
+        self.output = 3 # wyw: output = 3
 
         self.optimizer = optim.Adam(self.parameters(), lr=1e-4)
 
-    def forward(self, x):  # no necessary to define h_0 and c_0 explicitly.
+    def forward(self, x):
         """Define forward process for LSTM."""
         batch_size = x.shape[0]
         x = self.conv_head(x)
@@ -764,7 +769,7 @@ class NCP_Model(nn.Module):
 
 
 if __name__ == "__main__":
-    s = (3, 128, 256)
+    s = (1, 480, 640)
     a = 3
     policy1 = Convolution_Model(s, a)  # initialize the CNN model
     cnn = ConvolutionHead_Nvidia(s, 16, num_filters=32, features_per_filter=4)
