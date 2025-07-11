@@ -6,10 +6,18 @@ This file defines CNN head before RNN in combination of CNN+RNN.
 import torch
 from torch import nn
 import torch.nn.functional as F
+
+import os
+import sys
+# Add the parent directory to the Python path
+# This assumes cnn_head.py is in the 'nets/' directory, and 'utils.py' is in its parent directory
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+
 from utils import _image_standardization
 
 
-# ResBlock， implement the ResBlock
+# ResBlock, implement the ResBlock
 class ResBlock(nn.Module):
     """This class defines the residual block."""
 
@@ -58,86 +66,56 @@ class ConvolutionHead_Nvidia(nn.Module):
                  num_filters=8, features_per_filter=4):
         """Initialize the object."""
         super(ConvolutionHead_Nvidia, self).__init__()
-        # wyw: (3, 66, 200) → (1, 480, 640)
+        # wyw: (3, 66, 200) -> (1, 480, 640)
 
         self.feature_layer = None
         self.filter_output = []
-        self.linear = []
+        # self.linear = []
         self.num_filters = num_filters
         self.features_per_filter = features_per_filter
-        self.conv = nn.Sequential(  # wyw: (66, 200) → (480, 640)
+        self.conv = nn.Sequential(  # wyw: (66, 200) → (1, 480, 640)
             nn.Conv2d(1, 24, kernel_size=5, stride=2, bias=True),
-            nn.ReLU(inplace=True),  # after (31,98)
+            nn.ReLU(inplace=True),  # wyw: after (238,318)
+            nn.MaxPool2d(kernel_size=2, stride=2), # after (119, 159)
 
             nn.Conv2d(24, 36, kernel_size=5, stride=2, bias=True),
-            nn.ReLU(inplace=True),  # after (14,47)
+            nn.ReLU(inplace=True),  # after (58,77)
+            nn.MaxPool2d(kernel_size=2, stride=2), # after (29, 38)
 
             nn.Conv2d(36, 48, kernel_size=5, stride=2, bias=True),
-            nn.ReLU(inplace=True),  # after (5,22)
+            nn.ReLU(inplace=True),  # after (13,17)
+            nn.MaxPool2d(kernel_size=2, stride=2), # after (6, 8)
 
             nn.Conv2d(48, 64, kernel_size=3, stride=1, bias=True),
-            nn.BatchNorm2d(64),   # after (3,20)
+            nn.BatchNorm2d(64),   # after (4,6)
             nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=2, stride=2), # after (2, 3)
 
             nn.Conv2d(64, self.num_filters,
-                      kernel_size=3, stride=1, bias=True),
-            nn.BatchNorm2d(self.num_filters),   # after (1,18)
-            nn.ReLU(inplace=True)
+                      kernel_size=1, stride=1, bias=True),
+            nn.BatchNorm2d(self.num_filters),   # after (2, 3)
+            nn.ReLU(inplace=True),
         )
+        # Calculate the flattened features size dynamically for the linear layers
+        with torch.no_grad():
+            # Create a dummy input tensor with the expected shape
+            # (batch_size=1, channels, height, width)
+            dummy_input = torch.zeros(1, img_dim[0], img_dim[1], img_dim[2])
+            output_features = self.conv(dummy_input)
+            # Flatten the output to get the size for the linear layer
+            self.flattened_features_size = output_features.view(output_features.size(0), -1).size(1)
 
-        self.linear1 = nn.Linear(18, self.features_per_filter)  # (18,4)
-        self.linear2 = nn.Linear(18, self.features_per_filter)
-        self.linear3 = nn.Linear(18, self.features_per_filter)
-        self.linear4 = nn.Linear(18, self.features_per_filter)
-        self.linear5 = nn.Linear(18, self.features_per_filter)
-        self.linear6 = nn.Linear(18, self.features_per_filter)
-        self.linear7 = nn.Linear(18, self.features_per_filter)
-        self.linear8 = nn.Linear(18, self.features_per_filter)
+        # Dynamically create linear layers based on calculated flattened_features_size
+        # The original code had 32 linear layers. Let's make it flexible.
+        self.linear_layers = nn.ModuleList([
+            nn.Linear(self.flattened_features_size // self.num_filters, self.features_per_filter)
+            for _ in range(self.num_filters)
+        ])
 
-        self.linear9 = nn.Linear(18, self.features_per_filter)
-        self.linear10 = nn.Linear(18, self.features_per_filter)
-        self.linear11 = nn.Linear(18, self.features_per_filter)
-        self.linear12 = nn.Linear(18, self.features_per_filter)
-        self.linear13 = nn.Linear(18, self.features_per_filter)
-        self.linear14 = nn.Linear(18, self.features_per_filter)
-        self.linear15 = nn.Linear(18, self.features_per_filter)
-        self.linear16 = nn.Linear(18, self.features_per_filter)
-
-        self.linear17 = nn.Linear(18, self.features_per_filter)
-        self.linear18 = nn.Linear(18, self.features_per_filter)
-        self.linear19 = nn.Linear(18, self.features_per_filter)
-        self.linear20 = nn.Linear(18, self.features_per_filter)
-        self.linear21 = nn.Linear(18, self.features_per_filter)
-        self.linear22 = nn.Linear(18, self.features_per_filter)
-        self.linear23 = nn.Linear(18, self.features_per_filter)
-        self.linear24 = nn.Linear(18, self.features_per_filter)
-        self.linear25 = nn.Linear(18, self.features_per_filter)
-        self.linear26 = nn.Linear(18, self.features_per_filter)
-        self.linear27 = nn.Linear(18, self.features_per_filter)
-        self.linear28 = nn.Linear(18, self.features_per_filter)
-        self.linear29 = nn.Linear(18, self.features_per_filter)
-        self.linear30 = nn.Linear(18, self.features_per_filter)
-        self.linear31 = nn.Linear(18, self.features_per_filter)
-        self.linear32 = nn.Linear(18, self.features_per_filter)
-
-        self.linear = [self.linear1, self.linear2, self.linear3,
-                       self.linear4, self.linear5, self.linear6,
-                       self.linear7, self.linear8, self.linear9,
-                       self.linear10, self.linear11, self.linear12,
-                       self.linear13, self.linear14, self.linear15,
-                       self.linear16, self.linear17, self.linear18,
-                       self.linear19, self.linear20, self.linear21,
-                       self.linear22, self.linear23, self.linear24,
-                       self.linear25, self.linear26, self.linear27,
-                       self.linear28, self.linear29, self.linear30,
-                       self.linear31, self.linear32]
-
-        self.img_channel = img_dim[0]   # the channels of the input image
-        self.img_height = img_dim[1]    # the height of the input image
-        self.img_width = img_dim[2]     # the width of the input image
-        # for reversing the CNN output into (batch,time,channel,height,width)
+        self.img_channel = img_dim[0]
+        self.img_height = img_dim[1]
+        self.img_width = img_dim[2]
         self.time_sequence = time_sequence
-        # 32 * 4 =128
         self.total_features = self.num_filters * self.features_per_filter
 
     def forward(self, x):
@@ -170,10 +148,9 @@ class ConvolutionHead_Nvidia(nn.Module):
             self.filter_output[i] = torch.squeeze(
                 self.filter_output[i], dim=1)
 
-            # flatten the output of each filter, 1*18 = 18
-            self.filter_output[i] = self.filter_output[i].view(-1, 18)
+            self.filter_output[i] = self.filter_output[i].view(-1, self.flattened_features_size // self.num_filters)
             # the output of each filter feed into linear layer
-            feats = F.relu(self.linear[i](self.filter_output[i]))
+            feats = F.relu(self.linear_layers[i](self.filter_output[i]))
             feature_layer_list.append(feats)
 
         # concat the features from each filter together
@@ -201,85 +178,55 @@ class ConvolutionHead_ResNet(nn.Module):
 
         self.feature_layer = None
         self.filter_output = []
-        self.linear = []
+        # self.linear = []
         self.num_filters = num_filters
         self.features_per_filter = features_per_filter
 
         self.in_channel = 24
-        # layer before Residual Block  input image (66,200)
-        # wyw: (66, 200) → (480, 640)
+        # layer before Residual Block input image (66, 200)
+        # wyw: (66, 200) → (1, 480, 640)
         self.conv1 = nn.Sequential(
             nn.Conv2d(1, 24, kernel_size=5, stride=1, padding=1, bias=False),
             nn.BatchNorm2d(24),  # (64,198)
-            nn.ReLU(inplace=True)
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=2, stride=2) # After (24, 239, 319) -> (24, 119, 159)
         )
-        self.layer1 = self.make_layer(ResBlock, 36, 2, stride=2)  # (32,99)
-        self.layer2 = self.make_layer(ResBlock, 48, 2, stride=2)  # (16,50)
-        self.layer3 = self.make_layer(ResBlock, 64, 2, stride=2)  # (8,25)
-        self.layer4 = self.make_layer(ResBlock, 64, 2, stride=2)  # (4,13)
+        self.layer1 = self.make_layer(ResBlock, 36, 2, stride=2) # Input (24, 119, 159) -> Output (36, 60, 80) approx
+        self.layer2 = self.make_layer(ResBlock, 48, 2, stride=2) # Input (36, 60, 80) -> Output (48, 30, 40) approx
+        self.layer3 = self.make_layer(ResBlock, 64, 2, stride=2) # Input (48, 30, 40) -> Output (64, 15, 20) approx
+        self.layer4 = self.make_layer(ResBlock, 64, 2, stride=2) # Input (64, 15, 20) -> Output (64, 8, 10) approx
         self.conv2 = nn.Sequential(
             nn.Conv2d(64,
                       self.num_filters,
                       kernel_size=3,
                       stride=1,
-                      bias=False),   # (2,11)
+                      bias=False),   # Output (num_filters, 6, 8)
             nn.BatchNorm2d(self.num_filters),
-            nn.ReLU(inplace=True)
-        )   # (3,12)
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=2, stride=2) # After (num_filters, 6, 8) -> (num_filters, 3, 4)
+        )
 
-        self.linear1 = nn.Linear(22, self.features_per_filter)  # (22,4)
-        self.linear2 = nn.Linear(22, self.features_per_filter)
-        self.linear3 = nn.Linear(22, self.features_per_filter)
-        self.linear4 = nn.Linear(22, self.features_per_filter)
-        self.linear5 = nn.Linear(22, self.features_per_filter)
-        self.linear6 = nn.Linear(22, self.features_per_filter)
-        self.linear7 = nn.Linear(22, self.features_per_filter)
-        self.linear8 = nn.Linear(22, self.features_per_filter)
+        # Calculate the flattened features size dynamically for the linear layers
+        with torch.no_grad():
+            dummy_input = torch.zeros(1, img_dim[0], img_dim[1], img_dim[2])
+            x = self.conv1(dummy_input)
+            x = self.layer1(x)
+            x = self.layer2(x)
+            x = self.layer3(x)
+            x = self.layer4(x)
+            output_features = self.conv2(x)
+            self.flattened_features_size = output_features.view(output_features.size(0), -1).size(1)
 
-        self.linear9 = nn.Linear(22, self.features_per_filter)
-        self.linear10 = nn.Linear(22, self.features_per_filter)
-        self.linear11 = nn.Linear(22, self.features_per_filter)
-        self.linear12 = nn.Linear(22, self.features_per_filter)
-        self.linear13 = nn.Linear(22, self.features_per_filter)
-        self.linear14 = nn.Linear(22, self.features_per_filter)
-        self.linear15 = nn.Linear(22, self.features_per_filter)
-        self.linear16 = nn.Linear(22, self.features_per_filter)
 
-        self.linear17 = nn.Linear(22, self.features_per_filter)
-        self.linear18 = nn.Linear(22, self.features_per_filter)
-        self.linear19 = nn.Linear(22, self.features_per_filter)
-        self.linear20 = nn.Linear(22, self.features_per_filter)
-        self.linear21 = nn.Linear(22, self.features_per_filter)
-        self.linear22 = nn.Linear(22, self.features_per_filter)
-        self.linear23 = nn.Linear(22, self.features_per_filter)
-        self.linear24 = nn.Linear(22, self.features_per_filter)
-        self.linear25 = nn.Linear(22, self.features_per_filter)
-        self.linear26 = nn.Linear(22, self.features_per_filter)
-        self.linear27 = nn.Linear(22, self.features_per_filter)
-        self.linear28 = nn.Linear(22, self.features_per_filter)
-        self.linear29 = nn.Linear(22, self.features_per_filter)
-        self.linear30 = nn.Linear(22, self.features_per_filter)
-        self.linear31 = nn.Linear(22, self.features_per_filter)
-        self.linear32 = nn.Linear(22, self.features_per_filter)
+        self.linear_layers = nn.ModuleList([
+            nn.Linear(self.flattened_features_size // self.num_filters, self.features_per_filter)
+            for _ in range(self.num_filters)
+        ])
 
-        self.linear = [self.linear1, self.linear2, self.linear3,
-                       self.linear4, self.linear5, self.linear6,
-                       self.linear7, self.linear8, self.linear9,
-                       self.linear10, self.linear11, self.linear12,
-                       self.linear13, self.linear14, self.linear15,
-                       self.linear16, self.linear17, self.linear18,
-                       self.linear19, self.linear20, self.linear21,
-                       self.linear22, self.linear23, self.linear24,
-                       self.linear25, self.linear26, self.linear27,
-                       self.linear28, self.linear29, self.linear30,
-                       self.linear31, self.linear32]
-
-        self.img_channel = img_dim[0]  # the channels of the input image
-        self.img_height = img_dim[1]  # the height of the input image
-        self.img_width = img_dim[2]  # the width of the input image
-        # for reversing the CNN output into (batch,time,channel,height,width)
+        self.img_channel = img_dim[0]
+        self.img_height = img_dim[1]
+        self.img_width = img_dim[2]
         self.time_sequence = time_sequence
-        # 32 * 4 =128
         self.total_features = self.num_filters * self.features_per_filter
 
     def make_layer(self, block, channels, num_blocks, stride):
@@ -330,11 +277,10 @@ class ConvolutionHead_ResNet(nn.Module):
             self.filter_output[i] = torch.squeeze(
                 self.filter_output[i], dim=1)
 
-            # flatten the output of each filter, 2*11 = 22
-            self.filter_output[i] = self.filter_output[i].view(-1, 22)
+            self.filter_output[i] = self.filter_output[i].view(-1, self.flattened_features_size // self.num_filters)
 
             # the output of each filter feed into linear layer
-            feats = F.relu(self.linear[i](self.filter_output[i]))
+            feats = F.relu(self.linear_layers[i](self.filter_output[i]))
             feature_layer_list.append(feats)
 
         # concat the features from each filter together
@@ -345,7 +291,7 @@ class ConvolutionHead_ResNet(nn.Module):
         return feature_layer  # (time_Sequence, batch_size, total_features)
 
     def count_params(self):
-        """Return how many params CNN_head have."""
+        """Return back how many params CNN_head have."""
         return sum(param.numel() for param in self.parameters())
 
 
@@ -359,89 +305,51 @@ class ConvolutionHead_AlexNet(nn.Module):
         # wyw: (3, 66, 200) → (1, 480, 640)
         self.feature_layer = None
         self.filter_output = []
-        self.linear = []
+        # self.linear = []
         self.num_filters = num_filters
         self.features_per_filter = features_per_filter
-        self.conv = nn.Sequential(  # wyw: (66, 200) → (480, 640)
+        self.conv = nn.Sequential(  # wyw: (66, 200) → (1, 480, 640)
             nn.Conv2d(1, 24, kernel_size=5, stride=1, padding=2, bias=True),
-            # after (66,200)
             nn.BatchNorm2d(24),
             nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=2, stride=2),  # (33,100)
+            nn.MaxPool2d(kernel_size=2, stride=2),  # After (240, 320)
 
             nn.Conv2d(24, 36, kernel_size=5, stride=1, padding=2, bias=True),
             nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=2, stride=2),  # (16，50）
+            nn.MaxPool2d(kernel_size=2, stride=2),  # After (120, 160)
 
             nn.Conv2d(36, 48, kernel_size=5, stride=1, padding=2, bias=True),
             nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=2, stride=2),  # （8,25）
+            nn.MaxPool2d(kernel_size=2, stride=2),  # After (60, 80)
 
             nn.Conv2d(48, 64, kernel_size=3, stride=1, padding=1, bias=True),
             nn.BatchNorm2d(64),
             nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=2, stride=2),  # (4,12)
+            nn.MaxPool2d(kernel_size=2, stride=2),  # After (30, 40)
 
             nn.Conv2d(64, self.num_filters,
                       kernel_size=3, stride=1, padding=1, bias=True),
             nn.BatchNorm2d(self.num_filters),
             nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=2, stride=2),  # (2,6)
+            nn.MaxPool2d(kernel_size=2, stride=2),  # After (15, 20)
         )
+        # Calculate the flattened features size dynamically for the linear layers
+        with torch.no_grad():
+            dummy_input = torch.zeros(1, img_dim[0], img_dim[1], img_dim[2])
+            output_features = self.conv(dummy_input)
+            self.flattened_features_size = output_features.view(output_features.size(0), -1).size(1)
+            # For num_filters=8, final size is (8, 15, 20) -> 8 * 15 * 20 = 2400
+            # So, in_features for each linear layer will be 2400 / 8 = 300
 
-        self.linear1 = nn.Linear(12, self.features_per_filter)  # (12,4)
-        self.linear2 = nn.Linear(12, self.features_per_filter)
-        self.linear3 = nn.Linear(12, self.features_per_filter)
-        self.linear4 = nn.Linear(12, self.features_per_filter)
-        self.linear5 = nn.Linear(12, self.features_per_filter)
-        self.linear6 = nn.Linear(12, self.features_per_filter)
-        self.linear7 = nn.Linear(12, self.features_per_filter)
-        self.linear8 = nn.Linear(12, self.features_per_filter)
+        self.linear_layers = nn.ModuleList([
+            nn.Linear(self.flattened_features_size // self.num_filters, self.features_per_filter)
+            for _ in range(self.num_filters)
+        ])
 
-        self.linear9 = nn.Linear(12, self.features_per_filter)
-        self.linear10 = nn.Linear(12, self.features_per_filter)
-        self.linear11 = nn.Linear(12, self.features_per_filter)
-        self.linear12 = nn.Linear(12, self.features_per_filter)
-        self.linear13 = nn.Linear(12, self.features_per_filter)
-        self.linear14 = nn.Linear(12, self.features_per_filter)
-        self.linear15 = nn.Linear(12, self.features_per_filter)
-        self.linear16 = nn.Linear(12, self.features_per_filter)
-
-        self.linear17 = nn.Linear(12, self.features_per_filter)
-        self.linear18 = nn.Linear(12, self.features_per_filter)
-        self.linear19 = nn.Linear(12, self.features_per_filter)
-        self.linear20 = nn.Linear(12, self.features_per_filter)
-        self.linear21 = nn.Linear(12, self.features_per_filter)
-        self.linear22 = nn.Linear(12, self.features_per_filter)
-        self.linear23 = nn.Linear(12, self.features_per_filter)
-        self.linear24 = nn.Linear(12, self.features_per_filter)
-        self.linear25 = nn.Linear(12, self.features_per_filter)
-        self.linear26 = nn.Linear(12, self.features_per_filter)
-        self.linear27 = nn.Linear(12, self.features_per_filter)
-        self.linear28 = nn.Linear(12, self.features_per_filter)
-        self.linear29 = nn.Linear(12, self.features_per_filter)
-        self.linear30 = nn.Linear(12, self.features_per_filter)
-        self.linear31 = nn.Linear(12, self.features_per_filter)
-        self.linear32 = nn.Linear(12, self.features_per_filter)
-
-        self.linear = [self.linear1, self.linear2, self.linear3,
-                       self.linear4, self.linear5, self.linear6,
-                       self.linear7, self.linear8, self.linear9,
-                       self.linear10, self.linear11, self.linear12,
-                       self.linear13, self.linear14, self.linear15,
-                       self.linear16, self.linear17, self.linear18,
-                       self.linear19, self.linear20, self.linear21,
-                       self.linear22, self.linear23, self.linear24,
-                       self.linear25, self.linear26, self.linear27,
-                       self.linear28, self.linear29, self.linear30,
-                       self.linear31, self.linear32]
-
-        self.img_channel = img_dim[0]  # the channels of the input image
-        self.img_height = img_dim[1]  # the height of the input image
-        self.img_width = img_dim[2]  # the width of the input image
-        # for reversing the CNN output into (batch,time,channel,height,width)
+        self.img_channel = img_dim[0]
+        self.img_height = img_dim[1]
+        self.img_width = img_dim[2]
         self.time_sequence = time_sequence
-        # 32 * 4 =128
         self.total_features = self.num_filters * self.features_per_filter
 
     def forward(self, x):
@@ -474,11 +382,11 @@ class ConvolutionHead_AlexNet(nn.Module):
                 self.filter_output[i], dim=1)
             # (sample_numbers, height, width)
 
-            # flatten the output of each filter, 12
-            self.filter_output[i] = self.filter_output[i].view(-1, 12)
+            # flatten the output of each filter
+            self.filter_output[i] = self.filter_output[i].view(-1, self.flattened_features_size // self.num_filters)
 
             # the output of each filter feed into linear layer
-            feats = F.relu(self.linear[i](self.filter_output[i]))
+            feats = F.relu(self.linear_layers[i](self.filter_output[i]))
             feature_layer_list.append(feats)
 
         # concat the features from each filter together
@@ -495,22 +403,53 @@ class ConvolutionHead_AlexNet(nn.Module):
 
 
 if __name__ == "__main__":
-    s = (3, 128, 256)
-    a = ConvolutionHead_Nvidia(
-        s,
-        1,
-        num_filters=32,
-        features_per_filter=4)
-    b = ConvolutionHead_ResNet(
-        s,
-        16,
-        num_filters=32,
-        features_per_filter=4)
-    c = ConvolutionHead_AlexNet(
-        s,
-        16,
-        num_filters=32,
-        features_per_filter=4)
-    print(a.count_params())
-    print(b.count_params())
-    print(c.count_params())
+    # Test with 3 channels and 480x640 resolution
+    input_dim_test = (1, 480, 640)
+    time_seq_test = 16
+    num_filters_test = 32
+    features_per_filter_test = 4
+
+    print("--- Testing ConvolutionHead_Nvidia ---")
+    nvidia_model = ConvolutionHead_Nvidia(
+        input_dim_test,
+        time_seq_test,
+        num_filters=num_filters_test,
+        features_per_filter=features_per_filter_test
+    )
+    # Check the calculated in_features for the linear layers
+    print(f"Nvidia Model - Calculated in_features per linear layer: {nvidia_model.linear_layers[0].in_features}")
+    # Expected: (32 * 2 * 3) / 32 = 6
+    dummy_input_nvidia = torch.randn(2, time_seq_test, input_dim_test[0], input_dim_test[1], input_dim_test[2])
+    output_nvidia = nvidia_model(dummy_input_nvidia)
+    print(f"Nvidia Model output shape: {output_nvidia.shape}")
+    print(f"Nvidia Model params: {nvidia_model.count_params()}\n")
+
+
+    print("--- Testing ConvolutionHead_ResNet ---")
+    resnet_model = ConvolutionHead_ResNet(
+        input_dim_test,
+        time_seq_test, # Changed time_sequence to 1 for simpler testing, adjust as needed
+        num_filters=num_filters_test,
+        features_per_filter=features_per_filter_test
+    )
+    print(f"ResNet Model - Calculated in_features per linear layer: {resnet_model.linear_layers[0].in_features}")
+    # Expected: (32 * 3 * 4) / 32 = 12
+    dummy_input_resnet = torch.randn(2, time_seq_test, input_dim_test[0], input_dim_test[1], input_dim_test[2])
+    output_resnet = resnet_model(dummy_input_resnet)
+    print(f"ResNet Model output shape: {output_resnet.shape}")
+    print(f"ResNet Model params: {resnet_model.count_params()}\n")
+
+
+    print("--- Testing ConvolutionHead_AlexNet ---")
+    alexnet_model = ConvolutionHead_AlexNet(
+        input_dim_test,
+        time_seq_test, # Changed time_sequence to 1 for simpler testing, adjust as needed
+        num_filters=num_filters_test,
+        features_per_filter=features_per_filter_test
+    )
+    print(f"AlexNet Model - Calculated in_features per linear layer: {alexnet_model.linear_layers[0].in_features}")
+    # Expected: (32 * 15 * 20) / 32 = 300
+    dummy_input_alexnet = torch.randn(2, time_seq_test, input_dim_test[0], input_dim_test[1], input_dim_test[2])
+    output_alexnet = alexnet_model(dummy_input_alexnet)
+    print(f"AlexNet Model output shape: {output_alexnet.shape}")
+    print(f"AlexNet Model params: {alexnet_model.count_params()}\n")
