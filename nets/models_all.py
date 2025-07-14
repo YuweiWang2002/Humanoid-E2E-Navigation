@@ -14,6 +14,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from utils import _image_standardization
 from nets.cnn_head import ConvolutionHead_Nvidia, ConvolutionHead_ResNet, ConvolutionHead_AlexNet
+from nets.mlp_head import MLPHead
 
 
 
@@ -129,463 +130,211 @@ class Convolution_Model(nn.Module):
         return dict_layer
 
 
-class GRU_Model(nn.Module):
-    """This class defines GRU model, layer is equal to 1."""
+class BaseRNNModel(nn.Module):
+    """A base class for RNN models to handle multi-modal feature fusion."""
 
-    def __init__(self, conv_head, time_step=16, hidden_size=64,
-                 output=3, use_cuda=True):
-        """
-        Initializes the GRU_Model.
-
-        Args:
-            conv_head (nn.Module): The CNN head module for feature extraction.
-                                   Its output features will determine input_size.
-            time_step (int, optional): The sequence length for the GRU. Defaults to 16.
-            hidden_size (int, optional): The number of features in the GRU's hidden state. Defaults to 64.
-            output (int, optional): The dimension of the model's output (e.g., 3 for velX, velY, vel_yaw). Defaults to 3.
-            use_cuda (bool, optional): Whether to use CUDA if available. Defaults to True.
-        """
-        super(GRU_Model, self).__init__()
+    def __init__(self, depth_cnn_head, state_mlp_head, rgb_cnn_head=None,
+                 time_step=16, output=3, use_cuda=True):
+        super(BaseRNNModel, self).__init__()
         self.device = torch.device("cuda"
                                    if use_cuda and torch.cuda.is_available()
                                    else "cpu")
-
         self.loss = nn.MSELoss(reduction='mean')
-        self.exp_factor = 0.1  # Weight factor for the weighted loss
-        self.num_params = 0    # To store the total number of trainable parameters
+        self.exp_factor = 0.1
 
-        self.conv_head = conv_head  # CNN layer (feature extractor) before the GRU
+        # Store feature extractor heads
+        self.depth_cnn_head = depth_cnn_head
+        self.state_mlp_head = state_mlp_head
+        self.rgb_cnn_head = rgb_cnn_head
+
         self.time_step = time_step
+        self.output = output
 
-        # Dynamically determine the input_size from the conv_head's total_features.
-        # This makes the GRU_Model more robust to changes in the conv_head's output dimensions.
-        if hasattr(self.conv_head, 'total_features'):
-            self.input_size = self.conv_head.total_features
-        else:
-            # Fallback if conv_head doesn't explicitly define total_features.
-            # You might need to run a dummy forward pass on conv_head to get its output shape
-            # if total_features is not a direct attribute.
-            # For current cnn_head implementation, total_features is present.
-            # A more robust check might involve:
-            # with torch.no_grad():
-            #     dummy_img = torch.zeros(1, conv_head.img_channel, conv_head.img_height, conv_head.img_width).to(self.device)
-            #     dummy_output = conv_head(dummy_img).squeeze(0) # remove time_sequence dim for this check
-            #     self.input_size = dummy_output.shape[-1]
-            print("Warning: 'total_features' not found in conv_head. Using provided input_size.")
-            # If `total_features` is not guaranteed, you might need to pass `input_size` explicitly or calculate it.
-            # For now, let's assume `conv_head` has `total_features` or `input_size` will be provided correctly.
-            self.input_size = 128 # Default value if not set via conv_head attribute
+        # Dynamically calculate the total input size for the RNN layer
+        self.total_input_size = 0
+        if self.depth_cnn_head:
+            self.total_input_size += self.depth_cnn_head.total_features
+        if self.state_mlp_head:
+            self.total_input_size += self.state_mlp_head.output_dim
+        if self.rgb_cnn_head:
+            self.total_input_size += self.rgb_cnn_head.total_features
 
-        self.hidden_size = hidden_size  # The number of features in the GRU's hidden state
-        self.output = output            # The dimension of the final output (e.g., steering, throttle, brake)
+    def _fuse_features(self, depth_img, state_data, rgb_img=None):
+        """
+        Extracts and fuses features from multiple input modalities.
 
-        # GRU layer: batch_first=True means input/output tensors are (batch_size, sequence_length, features)
-        self.GRU = nn.GRU(self.input_size, self.hidden_size, batch_first=True)
-        
-        # Linear layer to map the GRU's hidden_size output to the desired action dimension
+        Args:
+            depth_img (torch.Tensor): Depth image sequence.
+            state_data (torch.Tensor): State data sequence.
+            rgb_img (torch.Tensor, optional): RGB image sequence. Defaults to None.
+
+        Returns:
+            torch.Tensor: A single fused feature tensor.
+        """
+        features_to_fuse = []
+
+        # 1. Extract depth features
+        depth_features = self.depth_cnn_head(depth_img)
+        features_to_fuse.append(depth_features)
+
+        # 2. Extract state features
+        state_features = self.state_mlp_head(state_data)
+        features_to_fuse.append(state_features)
+
+        # 3. Extract RGB features if available
+        if self.rgb_cnn_head is not None and rgb_img is not None:
+            rgb_features = self.rgb_cnn_head(rgb_img)
+            features_to_fuse.append(rgb_features)
+
+        # 4. Concatenate all features along the feature dimension (dim=2)
+        fused_features = torch.cat(features_to_fuse, dim=2)
+        return fused_features
+
+    def criterion(self, a_imitator, a_exp):
+        return self.loss(a_imitator, a_exp)
+
+    def weighted_criterion(self, a_imitator, a_exp):
+        assert self.exp_factor >= 0, "exp_factor must be non-negative for weighted loss."
+        weights = torch.exp(torch.abs(a_exp) * self.exp_factor)
+        error = a_imitator - a_exp
+        return torch.sum(weights * torch.square(error)) / torch.sum(weights)
+
+    def release(self, sdir):
+        torch.save(self.state_dict(), sdir + "policy_model.pth")
+        torch.save(self.optimizer.state_dict(), sdir + "policy_optim.pth")
+
+    def load(self, ldir):
+        try:
+            self.load_state_dict(
+                torch.load(ldir + "policy_model.pth", map_location=torch.device('cpu'))
+            )
+            self.optimizer.load_state_dict(
+                torch.load(ldir + "policy_optim.pth", map_location=torch.device('cpu'))
+            )
+            print("Loaded parameters from: " + ldir)
+            return True
+        except Exception as e:
+            print(f"Parameters could not be loaded. Error: {e}")
+            return False
+
+    def count_params(self):
+        return sum(param.numel() for param in self.parameters())
+
+    def nn_structure(self):
+        return {i: self._modules[i] for i in self._modules.keys()}
+
+
+class GRU_Model(BaseRNNModel):
+    """This class defines GRU model, layer is equal to 1."""
+
+    def __init__(self, depth_cnn_head, state_mlp_head, rgb_cnn_head=None,
+                 time_step=16, hidden_size=64, output=3, use_cuda=True):
+        """
+        Initializes the GRU_Model.
+        """
+        super(GRU_Model, self).__init__(
+            depth_cnn_head, state_mlp_head, rgb_cnn_head,
+            time_step, output, use_cuda
+        )
+
+        self.hidden_size = hidden_size
+        self.GRU = nn.GRU(self.total_input_size, self.hidden_size, batch_first=True)
         self.linear = nn.Linear(self.hidden_size, self.output)
-
-        # The optimizer should be defined after all layers are initialized
-        # so that self.parameters() can correctly collect all learnable parameters.
         self.optimizer = optim.Adam(self.parameters(), lr=1e-4)
 
-    def forward(self, x):
+    def forward(self, depth_img, state_data, rgb_img=None):
         """
         Defines the forward pass of the GRU model.
 
         Args:
-            x (torch.Tensor): Input tensor with shape (batch_size, time_sequence, channel, height, width).
+            depth_img (torch.Tensor): Shape (B, T, C_d, H, W).
+            state_data (torch.Tensor): Shape (B, T, F_s).
+            rgb_img (torch.Tensor, optional): Shape (B, T, C_r, H, W).
 
         Returns:
             torch.Tensor: Output tensor with predicted actions, shape (batch_size, time_sequence, output).
         """
-        # Store original batch size for reshaping output
-        batch_size = x.shape[0]
+        batch_size = depth_img.shape[0]
 
-        # Process input through the CNN head to extract features
-        # Output shape: (batch_size, time_sequence, extracted_features)
-        x = self.conv_head(x)
+        fused_features = self._fuse_features(depth_img, state_data, rgb_img)
 
-        # Pass the extracted features through the GRU layer
-        # h_0 (initial hidden state) defaults to zeros if not provided
-        # x_out shape: (batch_size, time_sequence, hidden_size)
-        # _ represents the final hidden state (h_T), which is not used in this forward pass
-        x_out, _ = self.GRU(x)
-
-        # Reshape the GRU output for the linear layer
-        # .contiguous() is used to ensure memory contiguity before .view()
+        x_out, _ = self.GRU(fused_features)
         x_out = x_out.contiguous().view(-1, self.hidden_size)
-
-        # Map the hidden state output to the final action dimension
         x_out = self.linear(x_out)
-
-        # Reshape the output back to (batch_size, time_sequence, output)
         x_out = x_out.view(batch_size, self.time_step, self.output)
         return x_out
 
-    def evaluate_on_single_sequence(self, x, hidden_state=None):
+    def evaluate_on_single_sequence(self, depth_img, state_data, rgb_img=None, hidden_state=None):
         """
         Evaluates the model on a single sequence (e.g., for test or validation).
-        This method allows for passing and returning hidden states for sequential inference.
-
-        Args:
-            x (torch.Tensor): Input tensor with shape (batch_size, time_sequence, channel, height, width).
-                              Typically, batch_size is 1 for single sequence evaluation.
-            hidden_state (torch.Tensor, optional): Initial hidden state for the GRU.
-                                                   Shape: (num_layers * num_directions, batch_size, hidden_size).
-                                                   Defaults to None (initialized to zeros).
-
-        Returns:
-            tuple: A tuple containing:
-                - torch.Tensor: Predicted actions, shape (1, time_sequence, output).
-                - torch.Tensor: The final hidden state of the GRU.
         """
-        # Process input through the CNN head
-        # Output shape: (batch_size, time_sequence, extracted_features)
-        x = self.conv_head(x)
+        fused_features = self._fuse_features(depth_img, state_data, rgb_img)
 
-        # Initialize hidden state to zeros if not provided
         if hidden_state is None:
-            # GRU's hidden state shape: (num_layers * num_directions, batch_size, hidden_size)
-            # For a single-layer GRU (default), num_layers * num_directions is 1.
-            hidden_state = torch.zeros((1, x.shape[0], self.hidden_size),
-                                       device=x.device)
+            hidden_state = torch.zeros((1, fused_features.shape[0], self.hidden_size),
+                                       device=fused_features.device)
 
-        # Pass through GRU, returning output and updated hidden state
-        # result shape: (batch_size, time_sequence, hidden_size)
-        # hidden_state_out shape: (1, batch_size, hidden_size)
-        result, hidden_state_out = self.GRU(x, hidden_state)
+        result, hidden_state_out = self.GRU(fused_features, hidden_state)
 
-        # Reshape for the linear layer
         result = result.contiguous().view(-1, self.hidden_size)
-
-        # Map to action dimension
         result = self.linear(result)
-
-        # Add an unsqueeze dimension for consistency (e.g., if batch_size was 1, make it explicit)
-        # If the input batch_size is always 1 during evaluation, this ensures (1, time_step, output)
-        result = result.view(x.shape[0], self.time_step, self.output) # Reshape back to (Batch, Time, Output)
-        
-        # Consider if you want the output to be (1, 16, 3) for `evaluate_on_single_sequence` 
-        # or just (16, 3) if batch_size is always 1.
-        # The line `result = torch.unsqueeze(result, dim=0)` in your original code
-        # would be for a scenario where `result` was `(time_step, output)` and you needed a batch dimension.
-        # Given `result = result.view(x.shape[0], self.time_step, self.output)` already includes batch_size,
-        # `torch.unsqueeze(result, dim=0)` would add an extra redundant dimension if `x.shape[0]` is already 1.
-        # So, the current `result.view` is more general.
-
+        result = result.view(fused_features.shape[0], self.time_step, self.output)
         return result, hidden_state_out
 
-    def criterion(self, a_imitator, a_exp):
-        """
-        Calculates the standard Mean Squared Error (MSE) loss.
 
-        Args:
-            a_imitator (torch.Tensor): Predicted actions from the model.
-            a_exp (torch.Tensor): Ground truth (expert) actions.
-
-        Returns:
-            torch.Tensor: The MSE loss value.
-        """
-        loss = self.loss(a_imitator, a_exp)
-        return loss
-
-    def weighted_criterion(self, a_imitator, a_exp):
-        """
-        Calculates a weighted MSE loss, where weights are based on the absolute value of expert actions.
-        This can be useful to emphasize learning in critical (e.g., larger steering angle) situations.
-
-        Args:
-            a_imitator (torch.Tensor): Predicted actions from the model.
-            a_exp (torch.Tensor): Ground truth (expert) actions.
-
-        Returns:
-            torch.Tensor: The weighted MSE loss value.
-        """
-        assert self.exp_factor >= 0, "exp_factor must be non-negative for weighted loss."
-        weights = torch.exp(torch.abs(a_exp) * self.exp_factor) # Weights increase exponentially with action magnitude
-        error = a_imitator - a_exp
-        return torch.sum(weights * torch.square(error)) / torch.sum(weights)
-
-    def release(self, sdir):
-        """
-        Saves the trained model's state dictionary and optimizer's state dictionary.
-
-        Args:
-            sdir (str): Directory path to save the model files.
-        """
-        torch.save(self.state_dict(), sdir + "policy_model.pth")
-        torch.save(self.optimizer.state_dict(), sdir + "policy_optim.pth")
-
-    def load(self, ldir):
-        """
-        Loads a trained model's state dictionary and optimizer's state dictionary.
-
-        Args:
-            ldir (str): Directory path to load the model files from.
-
-        Returns:
-            bool: True if parameters were loaded successfully, False otherwise.
-        """
-        try:
-            self.load_state_dict(
-                torch.load(ldir + "policy_model.pth",
-                           map_location=torch.device('cpu'))
-            )
-            self.optimizer.load_state_dict(
-                torch.load(ldir + "policy_optim.pth",
-                           map_location=torch.device('cpu'))
-            )
-            print("Loaded parameters from: " + ldir)
-            return True
-        except Exception as e: # Catch specific exception for better debugging
-            print(f"Parameters could not be loaded. Error: {e}")
-            return False
-
-    def count_params(self):
-        """
-        Counts the total number of learnable parameters in the network.
-
-        Returns:
-            int: Total number of learnable parameters.
-        """
-        self.num_params = sum(param.numel() for param in self.parameters())
-        return self.num_params
-
-    def nn_structure(self):
-        """
-        Returns a dictionary containing the model's direct child modules.
-
-        Returns:
-            dict: A dictionary mapping module names to their instances.
-        """
-        dict_layer = {i: self._modules[i] for i in self._modules.keys()}
-        return dict_layer
-
-
-class LSTM_Model(nn.Module):
+class LSTM_Model(BaseRNNModel):
     """This class defines the LSTM model, with num_layers set to 1."""
 
-    def __init__(self, conv_head, time_step=16, hidden_size=64,
-                 output=3, use_cuda=True):
+    def __init__(self, depth_cnn_head, state_mlp_head, rgb_cnn_head=None,
+                 time_step=16, hidden_size=64, output=3, use_cuda=True):
         """
         Initializes the LSTM_Model.
-
-        Args:
-            conv_head (nn.Module): The CNN head module for feature extraction.
-                                   Its output features will determine input_size.
-            time_step (int, optional): The sequence length for the LSTM. Defaults to 16.
-            hidden_size (int, optional): The number of features in the LSTM's hidden state (h and c). Defaults to 64.
-            output (int, optional): The dimension of the model's output (e.g., 3 for velX, velY, vel_yaw). Defaults to 3.
-            use_cuda (bool, optional): Whether to use CUDA if available. Defaults to True.
         """
-        super(LSTM_Model, self).__init__()
+        super(LSTM_Model, self).__init__(
+            depth_cnn_head, state_mlp_head, rgb_cnn_head,
+            time_step, output, use_cuda
+        )
 
-        self.device = torch.device("cuda"
-                                   if use_cuda and torch.cuda.is_available()
-                                   else "cpu")
-        self.loss = nn.MSELoss(reduction='mean')
-        self.exp_factor = 0.1  # Weight factor for the weighted loss
-        self.num_params = 0    # To store the total number of trainable parameters
-
-        self.conv_head = conv_head   # CNN layer (feature extractor) before the LSTM
-        self.time_step = time_step
-
-        # Dynamically determine the input_size from the conv_head's total_features.
-        # This makes the LSTM_Model more robust to changes in the conv_head's output dimensions.
-        if hasattr(self.conv_head, 'total_features'):
-            self.input_size = self.conv_head.total_features
-        else:
-            # Fallback if conv_head doesn't explicitly define total_features.
-            print("Warning: 'total_features' not found in conv_head. Using provided input_size.")
-            self.input_size = 128 # Default value if not set via conv_head attribute
-
-        self.hidden_size = hidden_size  # The number of features in the LSTM's hidden state (h and c)
-        self.output = output            # The dimension of the final output (e.g., steering, throttle, brake)
-
-        # LSTM layer: batch_first=True means input/output tensors are (batch_size, sequence_length, features)
-        self.lstm = nn.LSTM(self.input_size,
+        self.hidden_size = hidden_size
+        self.lstm = nn.LSTM(self.total_input_size,
                             self.hidden_size,
-                            batch_first=True)  # default: num_layers = 1
-        
-        # Linear layer to map the LSTM's hidden_size output to the desired action dimension
-        # Based on your comment 'wyw: linear(64,3) -> linear(64,3) 修改输出维度为3' and 'wyw: output = 3'
-        # ensure self.output is correctly set and used here.
+                            batch_first=True)
         self.linear = nn.Linear(self.hidden_size, self.output)
-
-        # The optimizer should be defined after all layers are initialized
         self.optimizer = optim.Adam(self.parameters(), lr=1e-4)
 
-    def forward(self, x):  # No need to define h_0 and c_0 explicitly, LSTM handles default zeros.
+    def forward(self, depth_img, state_data, rgb_img=None):
         """
         Defines the forward pass for the LSTM model.
-
-        Args:
-            x (torch.Tensor): Input tensor with shape (batch_size, time_sequence, channel, height, width).
-
-        Returns:
-            torch.Tensor: Output tensor with predicted actions, shape (batch_size, time_sequence, output).
         """
-        batch_size = x.shape[0]
-        # Process input through the CNN head to extract features
-        # Output shape: (batch_size, time_sequence, extracted_features)
-        x = self.conv_head(x)
+        batch_size = depth_img.shape[0]
+        fused_features = self._fuse_features(depth_img, state_data, rgb_img)
 
-        # Pass the extracted features through the LSTM layer
-        # (h_0, c_0 default to zeros if not provided),
-        # (h_T, c_T) represent the cell state/hidden state of the last time step.
-        # x_out shape: (batch_size, time_step, hidden_size)
-        x_out, _ = self.lstm(x)
-
-        # Reshape the LSTM output for the linear layer
-        # .contiguous() ensures memory contiguity before .view()
+        x_out, _ = self.lstm(fused_features)
         x_out = x_out.contiguous().view(-1, self.hidden_size)
-        
-        # Map the hidden state output to the final action dimension
         x_out = self.linear(x_out)
-
-        # Reshape the output back to (batch_size, time_sequence, output)
         x_out = x_out.view(batch_size, self.time_step, self.output)
         return x_out
 
-    def evaluate_on_single_sequence(self, x, hidden_state=None):
+    def evaluate_on_single_sequence(self, depth_img, state_data, rgb_img=None, hidden_state=None):
         """
         Evaluates the model on a single sequence sequentially (e.g., for valid or test).
-        This method allows for passing and returning hidden states (h and c) for sequential inference.
-
-        Args:
-            x (torch.Tensor): Input tensor with shape (batch_size, time_sequence, channel, height, width).
-                              Typically, batch_size is 1 for single sequence evaluation.
-            hidden_state (tuple, optional): Initial hidden state (h0, c0) for the LSTM.
-                                            Each tensor in the tuple has shape:
-                                            (num_layers * num_directions, batch_size, hidden_size).
-                                            Defaults to None (initialized to zeros).
-
-        Returns:
-            tuple: A tuple containing:
-                - torch.Tensor: Predicted actions, shape (batch_size, time_sequence, output).
-                - tuple: The final hidden state (h_n, c_n) of the LSTM.
         """
-        # Process input through the CNN head
-        # Output shape: (batch_size, time_sequence, extracted_features)
-        x = self.conv_head(x)
+        fused_features = self._fuse_features(depth_img, state_data, rgb_img)
 
         if hidden_state is None:
-            # Initialize hidden state (h0, c0) to zeros if not provided.
-            # Each tensor has shape: (num_layers * num_directions, batch_size, hidden_size)
-            # For a single-layer LSTM, num_layers * num_directions is 1.
-            hidden_state = (torch.zeros((1, x.shape[0], self.hidden_size), device=x.device),
-                            torch.zeros((1, x.shape[0], self.hidden_size), device=x.device))
+            h0 = torch.zeros((1, fused_features.shape[0], self.hidden_size), device=fused_features.device)
+            c0 = torch.zeros((1, fused_features.shape[0], self.hidden_size), device=fused_features.device)
+            hidden_state = (h0, c0)
 
-        # Pass through LSTM, returning output and updated hidden state (h_n, c_n)
-        # result shape: (batch_size, time_sequence, hidden_size)
-        # hidden_state_out is a tuple (h_n, c_n)
-        result, hidden_state_out = self.lstm(x, hidden_state)
+        result, hidden_state_out = self.lstm(fused_features, hidden_state)
 
-        # Reshape for the linear layer
-        # In this case, N=batch_size, L=time_step, H_out=hidden_size -> (N*L, H_out)
         result = result.contiguous().view(-1, self.hidden_size)
-        
-        # Map to action dimension
         result = self.linear(result)
-
-        # Reshape the output back to (batch_size, time_sequence, output)
-        result = result.view(x.shape[0], self.time_step, self.output)
-        
+        result = result.view(fused_features.shape[0], self.time_step, self.output)
         return result, hidden_state_out
 
-    def criterion(self, a_imitator, a_exp):
-        """
-        Calculates the standard Mean Squared Error (MSE) loss.
 
-        Args:
-            a_imitator (torch.Tensor): Predicted actions from the model.
-            a_exp (torch.Tensor): Ground truth (expert) actions.
-
-        Returns:
-            torch.Tensor: The MSE loss value.
-        """
-        loss = self.loss(a_imitator, a_exp)
-        return loss
-
-    def weighted_criterion(self, a_imitator, a_exp):
-        """
-        Calculates a weighted MSE loss, where weights are based on the absolute value of expert actions.
-        This can be useful to emphasize learning in critical (e.g., larger steering angle) situations.
-
-        Args:
-            a_imitator (torch.Tensor): Predicted actions from the model.
-            a_exp (torch.Tensor): Ground truth (expert) actions.
-
-        Returns:
-            torch.Tensor: The weighted MSE loss value.
-        """
-        assert self.exp_factor >= 0, "exp_factor must be non-negative for weighted loss."
-        weights = torch.exp(torch.abs(a_exp) * self.exp_factor) # Weights increase exponentially with action magnitude
-        error = a_imitator - a_exp
-        return torch.sum(weights * torch.square(error)) / torch.sum(weights)
-
-    def release(self, sdir):
-        """
-        Saves the trained model's state dictionary and optimizer's state dictionary.
-
-        Args:
-            sdir (str): Directory path to save the model files.
-        """
-        torch.save(self.state_dict(), sdir + "policy_model.pth")
-        torch.save(self.optimizer.state_dict(), sdir + "policy_optim.pth")
-
-    def load(self, ldir):
-        """
-        Loads a trained model's state dictionary and optimizer's state dictionary.
-
-        Args:
-            ldir (str): Directory path to load the model files from.
-
-        Returns:
-            bool: True if parameters were loaded successfully, False otherwise.
-        """
-        try:
-            self.load_state_dict(
-                torch.load(
-                    ldir + "policy_model.pth",
-                    map_location=torch.device('cpu')
-                )
-            )
-            self.optimizer.load_state_dict(
-                torch.load(
-                    ldir + "policy_optim.pth",
-                    map_location=torch.device('cpu')
-                )
-            )
-            print("Loaded parameters from: " + ldir)
-            return True
-        except Exception as e: # Catch specific exception for better debugging
-            print(f"Parameters could not be loaded. Error: {e}")
-            return False
-
-    def count_params(self):
-        """
-        Counts the total number of learnable parameters in the network.
-
-        Returns:
-            int: Total number of learnable parameters.
-        """
-        self.num_params = sum(param.numel() for param in self.parameters())
-        return self.num_params
-
-    def nn_structure(self):
-        """
-        Returns a dictionary containing the model's direct child modules.
-
-        Returns:
-            dict: A dictionary mapping module names to their instances.
-        """
-        dict_layer = {i: self._modules[i] for i in self._modules.keys()}
-        return dict_layer
-
-
-class CTGRU_Model(nn.Module):
+class CTGRU_Model(BaseRNNModel):
     """
     This class defines a Continuous-Time Gated Recurrent Unit (CT-GRU) model.
     It incorporates multiple "traces" (M) with varying time constants to capture
@@ -593,26 +342,19 @@ class CTGRU_Model(nn.Module):
     """
 
     def __init__(self, num_units, conv_head,
-                 M=8, time_step=16, output=3, use_cuda=True):
+                 M=8, time_step=16, output=3, use_cuda=True,
+                 depth_cnn_head=None, state_mlp_head=None, rgb_cnn_head=None): # Added for compatibility
         """
         Initializes the CTGRU_Model.
-
-        Args:
-            num_units (int): The number of hidden units (neurons) in the CT-GRU. This is the 'hidden_size' of the main hidden state.
-            conv_head (nn.Module): The CNN head module for feature extraction.
-                                   Its output features will determine the input size for the CT-GRU.
-            M (int, optional): The number of traces (time scales) in the CT-GRU. Defaults to 8.
-            time_step (int, optional): The sequence length for the CT-GRU. Defaults to 16.
-            output (int, optional): The dimension of the model's final output (e.g., 3 for velX, velY, vel_yaw). Defaults to 3.
-            use_cuda (bool, optional): Whether to use CUDA if available. Defaults to True.
         """
-        super(CTGRU_Model, self).__init__()
-        self.device = torch.device("cuda"
-                                   if use_cuda and torch.cuda.is_available()
-                                   else "cpu")
-        self.loss = nn.MSELoss(reduction='mean')
-        self.exp_factor = 0.1 # Initialize exp_factor for weighted loss
+        # This is a bit of a hack to maintain backward compatibility with old scripts
+        # while moving to the new BaseRNNModel structure.
+        if depth_cnn_head is None: depth_cnn_head = conv_head
 
+        super(CTGRU_Model, self).__init__(
+            depth_cnn_head, state_mlp_head, rgb_cnn_head,
+            time_step, output, use_cuda
+        )
         self.conv_head = conv_head
         self._num_units = num_units  # The hidden size for each time step
         self.M = M                   # Number of memory traces (time scales)
@@ -628,31 +370,14 @@ class CTGRU_Model(nn.Module):
             ln_tau_table, dtype=torch.float32, device=self.device
         )
 
-        self.time_step = time_step
-        self.output = output
-
         # Image interval, 0.04 for training, 0.2 for simulation test
-        # Made this a member variable for flexibility
         self.delta_t = torch.tensor(0.04, device=self.device)
 
-        # Dynamically determine the input feature number from the conv_head
-        if hasattr(self.conv_head, 'total_features'):
-            self.feature_number = self.conv_head.total_features
-        else:
-            # Fallback or a more robust check if total_features is not a direct attribute
-            print("Warning: 'total_features' not found in conv_head. Please ensure conv_head provides correct feature number.")
-            # You might need to infer it from conv_head's output with a dummy pass
-            # For now, let's assume `conv_head` has `total_features` or `input_size` will be provided correctly.
-            # For now, let's assume `conv_head` has `total_features` or `input_size` will be provided correctly.
-            # If ConvolutionHead_Nvidia is used, its `total_features` attribute will be available.
-            self.feature_number = 128 # Default based on common scenarios or previous input_size
+        self.feature_number = self.total_input_size
 
         # Linear layers for CT-GRU gates
-        # linear_r for retrieval scale (r_ki)
         self.linear_r = nn.Linear(self.feature_number + self._num_units, self._num_units * M)
-        # linear_q for relevant event signals (q_k)
         self.linear_q = nn.Linear(self.feature_number + self._num_units, self._num_units)
-        # linear_s for storage scale (s_ki)
         self.linear_s = nn.Linear(self.feature_number + self._num_units, self._num_units * M)
 
         # Final linear layer to map the hidden state to the output action space
@@ -758,21 +483,13 @@ class CTGRU_Model(nn.Module):
 
         return h_hat_next, hidden_state
 
-    def forward(self, x):
+    def forward(self, depth_img, state_data, rgb_img=None):
         """
         Defines the forward pass of the CT-GRU model.
-        Processes a sequence of inputs and produces a sequence of outputs.
-
-        Args:
-            x (torch.Tensor): Input tensor with shape (batch_size, time_sequence, channel, height, width).
-
-        Returns:
-            torch.Tensor: Output tensor with predicted actions, shape (batch_size, time_sequence, output).
         """
-        # Process input through the CNN head
-        # Output shape: (batch_size, time_sequence, feature_number)
-        x = self.conv_head(x)
-
+        fused_features = self._fuse_features(depth_img, state_data, rgb_img)
+        x = fused_features # Use fused features as input
+        
         # Initialize internal memory traces (h_hat) to zeros
         # h_hat shape: (batch_size, num_units, M)
         h_hat = torch.zeros((x.shape[0], self._num_units, self.M), device=x.device)
@@ -802,151 +519,30 @@ class CTGRU_Model(nn.Module):
         outputs = outputs.view(-1, self.time_step, self.output)
         return outputs
 
-    def evaluate_on_single_sequence(self, x, hidden_state=None):
+    def evaluate_on_single_sequence(self, depth_img, state_data, rgb_img=None, hidden_state=None):
         """
         Evaluates the model on a single sequence sequentially (e.g., for validation or test).
-        This method is designed for processing a sequence step-by-step and
-        maintaining the internal memory state (h_hat) across steps.
-
-        Args:
-            x (torch.Tensor): Input tensor with shape (batch_size, time_sequence, channel, height, width).
-                              Typically, batch_size is 1 for single sequence evaluation.
-            hidden_state (torch.Tensor, optional): Initial internal memory traces (h_hat).
-                                                   Shape: (batch_size, num_units, M).
-                                                   Defaults to None (initialized to zeros).
-
-        Returns:
-            tuple: A tuple containing:
-                - results (torch.Tensor): Predicted actions, shape (batch_size, time_sequence, output).
-                - hidden_state (torch.Tensor): The final internal memory traces (h_hat) after processing the sequence.
         """
-        # Process input through the CNN head
-        # Output shape: (batch_size, time_sequence, feature_number)
-        x = self.conv_head(x)
+        fused_features = self._fuse_features(depth_img, state_data, rgb_img)
+        x = fused_features
         
         results = []
         if hidden_state is None:
-            # Initialize internal memory traces (h_hat) to zeros if not provided
             hidden_state = torch.zeros(
                 (x.shape[0], self._num_units, self.M), device=x.device
             )
 
         for t in range(self.time_step):
-            # Get input for the current time step
             inputs = x[:, t, :] # Shape: (batch_size, feature_number)
-            
-            # Update the CT-GRU states
-            # Note: `update` returns (h_hat_next, hidden_state_current_step)
             hidden_state, current_step_hidden_output = self.update(inputs, hidden_state, self.delta_t)
-            
-            # Append the main hidden output for this step to results
             results.append(current_step_hidden_output)
 
-        # Stack results along the time_step dimension
-        # results_stacked shape: (batch_size, time_sequence, num_units)
         results_stacked = torch.stack(results, dim=1)
-        
-        # Reshape for the final linear layer
         results_linear_input = results_stacked.contiguous().view(-1, self._num_units)
-        
-        # Map hidden states to action outputs
         results_final = self.linear(results_linear_input)
-
-        # Reshape to final output format (batch_size, time_sequence, output)
         results_final = results_final.view(x.shape[0], self.time_step, self.output)
         
         return results_final, hidden_state
-
-    def criterion(self, a_imitator, a_exp):
-        """
-        Calculates the standard Mean Squared Error (MSE) loss.
-
-        Args:
-            a_imitator (torch.Tensor): Predicted actions from the model.
-            a_exp (torch.Tensor): Ground truth (expert) actions.
-
-        Returns:
-            torch.Tensor: The MSE loss value.
-        """
-        loss = self.loss(a_imitator, a_exp)
-        return loss
-
-    def weighted_criterion(self, a_imitator, a_exp):
-        """
-        Calculates a weighted MSE loss, where weights are based on the absolute value of expert actions.
-        This can be useful to emphasize learning in critical (e.g., larger steering angle) situations.
-
-        Args:
-            a_imitator (torch.Tensor): Predicted actions from the model.
-            a_exp (torch.Tensor): Ground truth (expert) actions.
-
-        Returns:
-            torch.Tensor: The weighted MSE loss value.
-        """
-        assert self.exp_factor >= 0, "exp_factor must be non-negative for weighted loss."
-        weights = torch.exp(torch.abs(a_exp) * self.exp_factor) # Weights increase exponentially with action magnitude
-        error = a_imitator - a_exp
-        return torch.sum(weights * torch.square(error)) / torch.sum(weights)
-
-    def release(self, sdir):
-        """
-        Saves the trained model's state dictionary and optimizer's state dictionary.
-
-        Args:
-            sdir (str): Directory path to save the model files.
-        """
-        torch.save(self.state_dict(), sdir + "policy_model.pth")
-        torch.save(self.optimizer.state_dict(), sdir + "policy_optim.pth")
-
-    def load(self, ldir):
-        """
-        Loads a trained model's state dictionary and optimizer's state dictionary.
-
-        Args:
-            ldir (str): Directory path to load the model files from.
-
-        Returns:
-            bool: True if parameters were loaded successfully, False otherwise.
-        """
-        try:
-            print("Loading parameters to CPU...") # More descriptive message
-            self.load_state_dict(
-                torch.load(
-                    ldir + "policy_model.pth",
-                    map_location=torch.device('cpu')
-                )
-            )
-            self.optimizer.load_state_dict(
-                torch.load(
-                    ldir + "policy_optim.pth",
-                    map_location=torch.device('cpu')
-                )
-            )
-            print("Parameters loaded from: " + ldir) # Consistent message format
-            return True
-        except Exception as e: # Catch specific exception for better debugging
-            print(f"Parameters could not be loaded. Error: {e}")
-            return False
-
-    def count_params(self):
-        """
-        Counts the total number of learnable parameters in the network.
-
-        Returns:
-            int: Total number of learnable parameters.
-        """
-        self.num_params = sum(param.numel() for param in self.parameters())
-        return self.num_params
-
-    def nn_structure(self):
-        """
-        Returns a dictionary containing the model's direct child modules.
-
-        Returns:
-            dict: A dictionary mapping module names to their instances.
-        """
-        dict_layer = {i: self._modules[i] for i in self._modules.keys()}
-        return dict_layer
 
 
 if __name__ == "__main__":
@@ -965,6 +561,7 @@ if __name__ == "__main__":
     # Parameters for RNN models
     hidden_size_rnn = 64      # Hidden size for GRU/LSTM
     num_units_ctgru = 64      # Number of units for CTGRU
+    state_input_dim = 2       # e.g., (distance, angle)
     M_ctgru = 8               # Number of trajectories for CTGRU
     
     # Prepare dummy input data
@@ -976,6 +573,10 @@ if __name__ == "__main__":
     dummy_sequence_images_input = torch.randn(
         batch_size, time_sequence_length, image_channels, image_height, image_width
     )
+    # For multi-modal RNNs, we also need state data
+    dummy_state_data_input = torch.randn(batch_size, time_sequence_length, state_input_dim)
+    print(f"Dummy state data input shape: {dummy_state_data_input.shape}")
+
     print(f"Dummy image sequence input shape (CNN_Head + RNN): {dummy_sequence_images_input.shape}")
     print("-" * 40)
 
@@ -993,128 +594,75 @@ if __name__ == "__main__":
         print(f"  Convolution_Model test failed! Error: {e}")
     print("-" * 40)
 
-    # 2. Initialize and test CNN Heads
-    cnn_heads = {}
-    print("Testing Convolution Heads...")
-
-    # ConvolutionHead_Nvidia
+    # 2. Initialize Feature Extractor Heads
+    print("Initializing Feature Extractor Heads...")
     try:
-        print("\n  Testing ConvolutionHead_Nvidia...")
-        cnn_head_nvidia = ConvolutionHead_Nvidia(
+        # Head for Depth Images (1 channel)
+        depth_head = ConvolutionHead_Nvidia(
             s,
             time_sequence=time_sequence_length,
             num_filters=32,
             features_per_filter=4 
         )
-        cnn_heads['Nvidia'] = cnn_head_nvidia
-        cnn_nvidia_features_extracted = cnn_head_nvidia.total_features if hasattr(cnn_head_nvidia, 'total_features') else None
-        if cnn_nvidia_features_extracted is None:
-             raise AttributeError("'total_features' attribute not found in ConvolutionHead_Nvidia. Check its definition.")
-        print(f"    ConvolutionHead_Nvidia extracted features (total_features): {cnn_nvidia_features_extracted}")
-        
-        output_cnn_head_nvidia = cnn_head_nvidia(dummy_sequence_images_input)
-        print(f"    Input shape: {dummy_sequence_images_input.shape}")
-        print(f"    ConvolutionHead_Nvidia Output shape: {output_cnn_head_nvidia.shape}")
-        expected_shape = (batch_size, time_sequence_length, cnn_nvidia_features_extracted)
-        assert output_cnn_head_nvidia.shape == expected_shape, f"Shape mismatch! Expected: {expected_shape}, Actual: {output_cnn_head_nvidia.shape}"
-        print(f"    ConvolutionHead_Nvidia test passed! Parameters: {sum(p.numel() for p in cnn_head_nvidia.parameters() if p.requires_grad):,}")
-    except Exception as e:
-        print(f"    ConvolutionHead_Nvidia test failed! Error: {e}")
-        cnn_heads['Nvidia'] = None # Mark as failed
-    
-    # ConvolutionHead_ResNet
-    try:
-        print("\n  Testing ConvolutionHead_ResNet...")
-        cnn_head_resnet = ConvolutionHead_ResNet(
-            s,
+        print(f"  Depth CNN Head (Nvidia) initialized. Output features: {depth_head.total_features}")
+
+        # Head for RGB Images (3 channels) - optional
+        s_rgb = (3, image_height, image_width)
+        rgb_head = ConvolutionHead_Nvidia(
+            s_rgb,
             time_sequence=time_sequence_length,
+            num_filters=32,
+            features_per_filter=4
         )
-        cnn_heads['ResNet'] = cnn_head_resnet
-        resnet_features_extracted = cnn_head_resnet.total_features if hasattr(cnn_head_resnet, 'total_features') else None
-        if resnet_features_extracted is None:
-             raise AttributeError("'total_features' attribute not found in ConvolutionHead_ResNet. Check its definition.")
-        print(f"    ConvolutionHead_ResNet extracted features (total_features): {resnet_features_extracted}")
+        print(f"  RGB CNN Head (Nvidia) initialized. Output features: {rgb_head.total_features}")
 
-        output_cnn_head_resnet = cnn_head_resnet(dummy_sequence_images_input)
-        print(f"    Input shape: {dummy_sequence_images_input.shape}")
-        print(f"    ConvolutionHead_ResNet Output shape: {output_cnn_head_resnet.shape}")
-        expected_shape_resnet = (batch_size, time_sequence_length, resnet_features_extracted)
-        assert output_cnn_head_resnet.shape == expected_shape_resnet, f"Shape mismatch! Expected: {expected_shape_resnet}, Actual: {output_cnn_head_resnet.shape}"
-        print(f"    ConvolutionHead_ResNet test passed! Parameters: {sum(p.numel() for p in cnn_head_resnet.parameters() if p.requires_grad):,}")
+        # Head for State Data
+        mlp_head = MLPHead(input_dim=state_input_dim, output_dim=64)
+        print(f"  State MLP Head initialized. Output features: {mlp_head.output_dim}")
+
     except Exception as e:
-        print(f"    ConvolutionHead_ResNet test failed! Error: {e}")
-        cnn_heads['ResNet'] = None # Mark as failed
-
-    # ConvolutionHead_AlexNet
-    try:
-        print("\n  Testing ConvolutionHead_AlexNet...")
-        cnn_head_alexnet = ConvolutionHead_AlexNet(
-            s,
-            time_sequence=time_sequence_length,
-        )
-        cnn_heads['AlexNet'] = cnn_head_alexnet
-        alexnet_features_extracted = cnn_head_alexnet.total_features if hasattr(cnn_head_alexnet, 'total_features') else None
-        if alexnet_features_extracted is None:
-             raise AttributeError("'total_features' attribute not found in ConvolutionHead_AlexNet. Check its definition.")
-        print(f"    ConvolutionHead_AlexNet extracted features (total_features): {alexnet_features_extracted}")
-
-        output_cnn_head_alexnet = cnn_head_alexnet(dummy_sequence_images_input)
-        print(f"    Input shape: {dummy_sequence_images_input.shape}")
-        print(f"    ConvolutionHead_AlexNet Output shape: {output_cnn_head_alexnet.shape}")
-        expected_shape_alexnet = (batch_size, time_sequence_length, alexnet_features_extracted)
-        assert output_cnn_head_alexnet.shape == expected_shape_alexnet, f"Shape mismatch! Expected: {expected_shape_alexnet}, Actual: {output_cnn_head_alexnet.shape}"
-        print(f"    ConvolutionHead_AlexNet test passed! Parameters: {sum(p.numel() for p in cnn_head_alexnet.parameters() if p.requires_grad):,}")
-    except Exception as e:
-        print(f"    ConvolutionHead_AlexNet test failed! Error: {e}")
-        cnn_heads['AlexNet'] = None # Mark as failed
+        print(f"  Head initialization failed! Error: {e}")
+        depth_head, rgb_head, mlp_head = None, None, None
     print("-" * 40)
 
-    # 3. Test RNN Models with each CNN Head
+    # 3. Test RNN Models with Fused Features
     rnn_models = {
         'LSTM_Model': LSTM_Model,
         'GRU_Model': GRU_Model,
         'CTGRU_Model': CTGRU_Model
     }
 
-    print("Testing RNN Models with various CNN Heads...")
-    for rnn_name, RnnModelClass in rnn_models.items():
-        print(f"\n  Testing {rnn_name}...")
-        for cnn_head_name, cnn_head_instance in cnn_heads.items():
-            if cnn_head_instance is None:
-                print(f"    Skipping {rnn_name} with {cnn_head_name} head as CNN head initialization failed.")
-                continue
+    if all(h is not None for h in [depth_head, rgb_head, mlp_head]):
+        for rnn_name, RnnModelClass in rnn_models.items():
+            print(f"\n  Testing {rnn_name} with Fused Features...")
+            # Test case 1: Depth + State
+            print("    - Scenario 1: Depth + State")
+            model_ds = RnnModelClass(
+                depth_cnn_head=depth_head, state_mlp_head=mlp_head,
+                time_step=time_sequence_length, hidden_size=hidden_size_rnn, output=output_actions_dim
+            ) if rnn_name != 'CTGRU_Model' else CTGRU_Model(
+                num_units=num_units_ctgru, conv_head=depth_head,
+                depth_cnn_head=depth_head, state_mlp_head=mlp_head,
+                time_step=time_sequence_length, output=output_actions_dim
+            )
+            output_ds = model_ds(dummy_sequence_images_input, dummy_state_data_input)
+            assert output_ds.shape == (batch_size, time_sequence_length, output_actions_dim)
+            print(f"      Input size: {model_ds.total_input_size}, Output shape: {output_ds.shape} -> OK")
 
-            try:
-                print(f"    Initializing {rnn_name} with {cnn_head_name} head...")
-                if rnn_name == 'CTGRU_Model':
-                    model = RnnModelClass(
-                        num_units=num_units_ctgru,
-                        conv_head=cnn_head_instance,
-                        M=M_ctgru,
-                        time_step=time_sequence_length,
-                        output=output_actions_dim
-                    )
-                else: # LSTM and GRU
-                    model = RnnModelClass(
-                        conv_head=cnn_head_instance,
-                        time_step=time_sequence_length,
-                        hidden_size=hidden_size_rnn,
-                        output=output_actions_dim
-                    )
-                
-                output = model(dummy_sequence_images_input)
-                
-                print(f"      Input shape: {dummy_sequence_images_input.shape}")
-                print(f"      {rnn_name} with {cnn_head_name} head Output shape: {output.shape}")
-                expected_shape = (batch_size, time_sequence_length, output_actions_dim)
-                assert output.shape == expected_shape, f"Shape mismatch! Expected: {expected_shape}, Actual: {output.shape}"
-                
-                # Count parameters for the combined model
-                total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-                print(f"      {rnn_name} with {cnn_head_name} head test passed! Total Parameters: {total_params:,}")
-
-            except Exception as e:
-                print(f"    {rnn_name} with {cnn_head_name} head test failed! Error: {e}")
-        print("  " + "-" * 30) # Separator for each RNN model
+            # Test case 2: Depth + State + RGB
+            print("    - Scenario 2: Depth + State + RGB")
+            dummy_rgb_input = torch.randn(batch_size, time_sequence_length, 3, image_height, image_width)
+            model_dsr = RnnModelClass(
+                depth_cnn_head=depth_head, state_mlp_head=mlp_head, rgb_cnn_head=rgb_head,
+                time_step=time_sequence_length, hidden_size=hidden_size_rnn, output=output_actions_dim
+            ) if rnn_name != 'CTGRU_Model' else CTGRU_Model(
+                num_units=num_units_ctgru, conv_head=depth_head,
+                depth_cnn_head=depth_head, state_mlp_head=mlp_head, rgb_cnn_head=rgb_head,
+                time_step=time_sequence_length, output=output_actions_dim
+            )
+            output_dsr = model_dsr(dummy_sequence_images_input, dummy_state_data_input, dummy_rgb_input)
+            assert output_dsr.shape == (batch_size, time_sequence_length, output_actions_dim)
+            print(f"      Input size: {model_dsr.total_input_size}, Output shape: {output_dsr.shape} -> OK")
+            print(f"      Total params: {model_dsr.count_params():,}")
 
     print("\n--- All Model Functionality Quick Checks Completed! ---")
