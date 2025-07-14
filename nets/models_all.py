@@ -959,15 +959,15 @@ if __name__ == "__main__":
     output_actions_dim = 3 # Model output action dimension (e.g., steering, throttle, brake)
     a = output_actions_dim # Corresponds to Convolution_Model's 'a' parameter
 
-    time_sequence_length = 16 # Sequence length, i.e., number of frames
-    batch_size = 4            # Batch size
+    time_sequence_length = 8 # Sequence length, i.e., number of frames
+    batch_size = 2            # Batch size
 
     # Parameters for RNN models
     hidden_size_rnn = 64      # Hidden size for GRU/LSTM
     num_units_ctgru = 64      # Number of units for CTGRU
     M_ctgru = 8               # Number of trajectories for CTGRU
     
-    # 1. Prepare dummy input data
+    # Prepare dummy input data
     # For Convolution_Model, input is a single image: (batch_size, channels, height, width)
     dummy_single_image_input = torch.randn(batch_size, image_channels, image_height, image_width)
     print(f"\nDummy single image input shape (C_Model): {dummy_single_image_input.shape}")
@@ -979,166 +979,142 @@ if __name__ == "__main__":
     print(f"Dummy image sequence input shape (CNN_Head + RNN): {dummy_sequence_images_input.shape}")
     print("-" * 40)
 
-    # 2. Initialize and test Convolution_Model (stand-alone CNN model)
+    # 1. Initialize and test Convolution_Model (stand-alone CNN model)
     try:
         print("Testing Convolution_Model...")
-        # Assuming Convolution_Model is defined or imported from your codebase
         policy1 = Convolution_Model(s, a)
         output_policy1 = policy1(dummy_single_image_input)
         print(f"  Input shape: {dummy_single_image_input.shape}")
         print(f"  Convolution_Model Output shape: {output_policy1.shape}")
         expected_shape = (batch_size, output_actions_dim)
         assert output_policy1.shape == expected_shape, f"Shape mismatch! Expected: {expected_shape}, Actual: {output_policy1.shape}"
-        print("  Convolution_Model test passed!")
+        print(f"  Convolution_Model test passed! Parameters: {policy1.count_params():,}")
     except Exception as e:
         print(f"  Convolution_Model test failed! Error: {e}")
     print("-" * 40)
 
-    # 3. Initialize and test ConvolutionHead_Nvidia (CNN Feature Extractor)
-    # This CNN head's `total_features` is dynamically calculated based on its architecture
-    cnn_head_nvidia = None # Initialize to None in case of failure
+    # 2. Initialize and test CNN Heads
+    cnn_heads = {}
+    print("Testing Convolution Heads...")
+
+    # ConvolutionHead_Nvidia
     try:
-        print("Testing ConvolutionHead_Nvidia...")
+        print("\n  Testing ConvolutionHead_Nvidia...")
         cnn_head_nvidia = ConvolutionHead_Nvidia(
             s,
             time_sequence=time_sequence_length,
             num_filters=32,
             features_per_filter=4 
         )
-        # Verify if CNN_Head correctly exposes total_features attribute
+        cnn_heads['Nvidia'] = cnn_head_nvidia
         cnn_nvidia_features_extracted = cnn_head_nvidia.total_features if hasattr(cnn_head_nvidia, 'total_features') else None
         if cnn_nvidia_features_extracted is None:
              raise AttributeError("'total_features' attribute not found in ConvolutionHead_Nvidia. Check its definition.")
-        print(f"  ConvolutionHead_Nvidia extracted features (total_features): {cnn_nvidia_features_extracted}")
+        print(f"    ConvolutionHead_Nvidia extracted features (total_features): {cnn_nvidia_features_extracted}")
         
         output_cnn_head_nvidia = cnn_head_nvidia(dummy_sequence_images_input)
-        print(f"  Input shape: {dummy_sequence_images_input.shape}")
-        print(f"  ConvolutionHead_Nvidia Output shape: {output_cnn_head_nvidia.shape}")
+        print(f"    Input shape: {dummy_sequence_images_input.shape}")
+        print(f"    ConvolutionHead_Nvidia Output shape: {output_cnn_head_nvidia.shape}")
         expected_shape = (batch_size, time_sequence_length, cnn_nvidia_features_extracted)
         assert output_cnn_head_nvidia.shape == expected_shape, f"Shape mismatch! Expected: {expected_shape}, Actual: {output_cnn_head_nvidia.shape}"
-        print("  ConvolutionHead_Nvidia test passed!")
+        print(f"    ConvolutionHead_Nvidia test passed! Parameters: {sum(p.numel() for p in cnn_head_nvidia.parameters() if p.requires_grad):,}")
     except Exception as e:
-        print(f"  ConvolutionHead_Nvidia test failed! Error: {e}")
-    print("-" * 40)
-
-    # 4. Initialize and test ConvolutionHead_ResNet (CNN Feature Extractor)
+        print(f"    ConvolutionHead_Nvidia test failed! Error: {e}")
+        cnn_heads['Nvidia'] = None # Mark as failed
+    
+    # ConvolutionHead_ResNet
     try:
-        print("Testing ConvolutionHead_ResNet...")
-        # Assuming ConvolutionHead_ResNet takes img_dim (s) and time_sequence
+        print("\n  Testing ConvolutionHead_ResNet...")
         cnn_head_resnet = ConvolutionHead_ResNet(
             s,
             time_sequence=time_sequence_length,
-            # Add any other specific parameters for ResNet if its __init__ requires them
         )
+        cnn_heads['ResNet'] = cnn_head_resnet
         resnet_features_extracted = cnn_head_resnet.total_features if hasattr(cnn_head_resnet, 'total_features') else None
         if resnet_features_extracted is None:
              raise AttributeError("'total_features' attribute not found in ConvolutionHead_ResNet. Check its definition.")
-        print(f"  ConvolutionHead_ResNet extracted features (total_features): {resnet_features_extracted}")
+        print(f"    ConvolutionHead_ResNet extracted features (total_features): {resnet_features_extracted}")
 
         output_cnn_head_resnet = cnn_head_resnet(dummy_sequence_images_input)
-        print(f"  Input shape: {dummy_sequence_images_input.shape}")
-        print(f"  ConvolutionHead_ResNet Output shape: {output_cnn_head_resnet.shape}")
+        print(f"    Input shape: {dummy_sequence_images_input.shape}")
+        print(f"    ConvolutionHead_ResNet Output shape: {output_cnn_head_resnet.shape}")
         expected_shape_resnet = (batch_size, time_sequence_length, resnet_features_extracted)
         assert output_cnn_head_resnet.shape == expected_shape_resnet, f"Shape mismatch! Expected: {expected_shape_resnet}, Actual: {output_cnn_head_resnet.shape}"
-        print("  ConvolutionHead_ResNet test passed!")
+        print(f"    ConvolutionHead_ResNet test passed! Parameters: {sum(p.numel() for p in cnn_head_resnet.parameters() if p.requires_grad):,}")
     except Exception as e:
-        print(f"  ConvolutionHead_ResNet test failed! Error: {e}")
-    print("-" * 40)
+        print(f"    ConvolutionHead_ResNet test failed! Error: {e}")
+        cnn_heads['ResNet'] = None # Mark as failed
 
-    # 5. Initialize and test ConvolutionHead_AlexNet (CNN Feature Extractor)
+    # ConvolutionHead_AlexNet
     try:
-        print("Testing ConvolutionHead_AlexNet...")
-        # Assuming ConvolutionHead_AlexNet takes img_dim (s) and time_sequence
+        print("\n  Testing ConvolutionHead_AlexNet...")
         cnn_head_alexnet = ConvolutionHead_AlexNet(
             s,
             time_sequence=time_sequence_length,
-            # Add any other specific parameters for AlexNet if its __init__ requires them
         )
+        cnn_heads['AlexNet'] = cnn_head_alexnet
         alexnet_features_extracted = cnn_head_alexnet.total_features if hasattr(cnn_head_alexnet, 'total_features') else None
         if alexnet_features_extracted is None:
              raise AttributeError("'total_features' attribute not found in ConvolutionHead_AlexNet. Check its definition.")
-        print(f"  ConvolutionHead_AlexNet extracted features (total_features): {alexnet_features_extracted}")
+        print(f"    ConvolutionHead_AlexNet extracted features (total_features): {alexnet_features_extracted}")
 
         output_cnn_head_alexnet = cnn_head_alexnet(dummy_sequence_images_input)
-        print(f"  Input shape: {dummy_sequence_images_input.shape}")
-        print(f"  ConvolutionHead_AlexNet Output shape: {output_cnn_head_alexnet.shape}")
+        print(f"    Input shape: {dummy_sequence_images_input.shape}")
+        print(f"    ConvolutionHead_AlexNet Output shape: {output_cnn_head_alexnet.shape}")
         expected_shape_alexnet = (batch_size, time_sequence_length, alexnet_features_extracted)
         assert output_cnn_head_alexnet.shape == expected_shape_alexnet, f"Shape mismatch! Expected: {expected_shape_alexnet}, Actual: {output_cnn_head_alexnet.shape}"
-        print("  ConvolutionHead_AlexNet test passed!")
+        print(f"    ConvolutionHead_AlexNet test passed! Parameters: {sum(p.numel() for p in cnn_head_alexnet.parameters() if p.requires_grad):,}")
     except Exception as e:
-        print(f"  ConvolutionHead_AlexNet test failed! Error: {e}")
+        print(f"    ConvolutionHead_AlexNet test failed! Error: {e}")
+        cnn_heads['AlexNet'] = None # Mark as failed
     print("-" * 40)
 
+    # 3. Test RNN Models with each CNN Head
+    rnn_models = {
+        'LSTM_Model': LSTM_Model,
+        'GRU_Model': GRU_Model,
+        'CTGRU_Model': CTGRU_Model
+    }
 
-    # 6. Initialize and test LSTM_Model (using ConvolutionHead_Nvidia as an example)
-    # This test (and subsequent RNN tests) will only run if cnn_head_nvidia was successfully initialized.
-    if cnn_head_nvidia:
-        try:
-            print("Testing LSTM_Model...")
-            # Assuming LSTM_Model is defined or imported
-            lstm_model = LSTM_Model(
-                conv_head=cnn_head_nvidia, # Using the Nvidia CNN head for this test
-                time_step=time_sequence_length,
-                hidden_size=hidden_size_rnn,
-                output=output_actions_dim
-            )
-            output_lstm = lstm_model(dummy_sequence_images_input)
-            print(f"  Input shape: {dummy_sequence_images_input.shape}")
-            print(f"  LSTM_Model Output shape: {output_lstm.shape}")
-            expected_shape = (batch_size, time_sequence_length, output_actions_dim)
-            assert output_lstm.shape == expected_shape, f"Shape mismatch! Expected: {expected_shape}, Actual: {output_lstm.shape}"
-            print("  LSTM_Model test passed!")
-        except Exception as e:
-            print(f"  LSTM_Model test failed! Error: {e}")
-    else:
-        print("Skipping LSTM_Model test as ConvolutionHead_Nvidia failed to initialize.")
-    print("-" * 40)
+    print("Testing RNN Models with various CNN Heads...")
+    for rnn_name, RnnModelClass in rnn_models.items():
+        print(f"\n  Testing {rnn_name}...")
+        for cnn_head_name, cnn_head_instance in cnn_heads.items():
+            if cnn_head_instance is None:
+                print(f"    Skipping {rnn_name} with {cnn_head_name} head as CNN head initialization failed.")
+                continue
 
-    # 7. Initialize and test GRU_Model (using ConvolutionHead_Nvidia as an example)
-    if cnn_head_nvidia:
-        try:
-            print("Testing GRU_Model...")
-            # Assuming GRU_Model is defined or imported
-            gru_model = GRU_Model(
-                conv_head=cnn_head_nvidia, # Using the Nvidia CNN head for this test
-                time_step=time_sequence_length,
-                hidden_size=hidden_size_rnn,
-                output=output_actions_dim
-            )
-            output_gru = gru_model(dummy_sequence_images_input)
-            print(f"  Input shape: {dummy_sequence_images_input.shape}")
-            print(f"  GRU_Model Output shape: {output_gru.shape}")
-            expected_shape = (batch_size, time_sequence_length, output_actions_dim)
-            assert output_gru.shape == expected_shape, f"Shape mismatch! Expected: {expected_shape}, Actual: {output_gru.shape}"
-            print("  GRU_Model test passed!")
-        except Exception as e:
-            print(f"  GRU_Model test failed! Error: {e}")
-    else:
-        print("Skipping GRU_Model test as ConvolutionHead_Nvidia failed to initialize.")
-    print("-" * 40)
+            try:
+                print(f"    Initializing {rnn_name} with {cnn_head_name} head...")
+                if rnn_name == 'CTGRU_Model':
+                    model = RnnModelClass(
+                        num_units=num_units_ctgru,
+                        conv_head=cnn_head_instance,
+                        M=M_ctgru,
+                        time_step=time_sequence_length,
+                        output=output_actions_dim
+                    )
+                else: # LSTM and GRU
+                    model = RnnModelClass(
+                        conv_head=cnn_head_instance,
+                        time_step=time_sequence_length,
+                        hidden_size=hidden_size_rnn,
+                        output=output_actions_dim
+                    )
+                
+                output = model(dummy_sequence_images_input)
+                
+                print(f"      Input shape: {dummy_sequence_images_input.shape}")
+                print(f"      {rnn_name} with {cnn_head_name} head Output shape: {output.shape}")
+                expected_shape = (batch_size, time_sequence_length, output_actions_dim)
+                assert output.shape == expected_shape, f"Shape mismatch! Expected: {expected_shape}, Actual: {output.shape}"
+                
+                # Count parameters for the combined model
+                total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+                print(f"      {rnn_name} with {cnn_head_name} head test passed! Total Parameters: {total_params:,}")
 
-    # 8. Initialize and test CTGRU_Model (using ConvolutionHead_Nvidia as an example)
-    if cnn_head_nvidia:
-        try:
-            print("Testing CTGRU_Model...")
-            # Assuming CTGRU_Model is defined or imported
-            ctgru_model = CTGRU_Model(
-                num_units=num_units_ctgru,
-                conv_head=cnn_head_nvidia, # Using the Nvidia CNN head for this test
-                M=M_ctgru,
-                time_step=time_sequence_length,
-                output=output_actions_dim
-            )
-            output_ctgru = ctgru_model(dummy_sequence_images_input)
-            print(f"  Input shape: {dummy_sequence_images_input.shape}")
-            print(f"  CTGRU_Model Output shape: {output_ctgru.shape}")
-            expected_shape = (batch_size, time_sequence_length, output_actions_dim)
-            assert output_ctgru.shape == expected_shape, f"Shape mismatch! Expected: {expected_shape}, Actual: {output_ctgru.shape}"
-            print("  CTGRU_Model test passed!")
-        except Exception as e:
-            print(f"  CTGRU_Model test failed! Error: {e}")
-    else:
-        print("Skipping CTGRU_Model test as ConvolutionHead_Nvidia failed to initialize.")
-    print("-" * 40)
+            except Exception as e:
+                print(f"    {rnn_name} with {cnn_head_name} head test failed! Error: {e}")
+        print("  " + "-" * 30) # Separator for each RNN model
 
     print("\n--- All Model Functionality Quick Checks Completed! ---")

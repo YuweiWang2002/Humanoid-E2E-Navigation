@@ -74,7 +74,7 @@ class ConvolutionHead_Nvidia(nn.Module):
         self.num_filters = num_filters
         self.features_per_filter = features_per_filter
         self.conv = nn.Sequential(  # wyw: (66, 200) → (1, 480, 640)
-            nn.Conv2d(1, 24, kernel_size=5, stride=2, bias=True),
+            nn.Conv2d(img_dim[0], 24, kernel_size=5, stride=2, bias=True),
             nn.ReLU(inplace=True),  # wyw: after (238,318)
             nn.MaxPool2d(kernel_size=2, stride=2), # after (119, 159)
 
@@ -120,46 +120,49 @@ class ConvolutionHead_Nvidia(nn.Module):
 
     def forward(self, x):
         """Define forward process of Nvidia CNN_head."""
-        # x has the shape (batch size, time Sequence, channel, height, width)
-        # flatten the time_sequence*batch_size
-
-        # necessary because the last batch's size is not equal
-        # to set batch size
+        # Input x has shape (batch_size, time_sequence, channel, height, width)
         batch_size = x.shape[0]
 
-        # flatten x (batch_size * time_Sequence)
+        # Flatten batch and time dimensions for convolutional processing
+        # Shape becomes -> (batch_size * time_sequence, channel, height, width)
         x = x.view(-1, self.img_channel, self.img_height, self.img_width)
 
-        # do pic whitening  (pic-mean)/std
+        # Standardize image. NOTE: This helper function flattens the tensor to 2D.
         x = _image_standardization(x)
 
+        # Reshape the tensor back to 4D for the convolutional layers
         x = x.view(-1, self.img_channel, self.img_height, self.img_width)
-        x = self.conv(x)  # shape (sample_numbers, channels, height, width)
 
-        # after get the result from the conv layer,
-        # split the output of each channel, and feed the channels input into
-        # the linear layer individually
-        # slice one by one , (sample_numbers,1,height, width)
-        self.filter_output = list(torch.split(x, 1, dim=1))
+        # Pass through convolutional layers
+        # Shape -> (batch_size * time_sequence, num_filters, H', W')
+        conv_features = self.conv(x)
 
-        feature_layer_list = []
+        # Split the feature maps along the filter dimension.
+        # This creates a list of tensors, each with shape:
+        # (batch_size * time_sequence, 1, H', W')
+        split_features = torch.split(conv_features, 1, dim=1)
+
+        feature_vectors = []
+        features_per_map = self.flattened_features_size // self.num_filters
         for i in range(self.num_filters):
-            # (sample_numbers, height, width)
-            self.filter_output[i] = torch.squeeze(
-                self.filter_output[i], dim=1)
+            # Flatten the feature map for the i-th filter
+            # Shape -> (batch_size * time_sequence, features_per_map)
+            flattened_map = split_features[i].view(-1, features_per_map)
 
-            self.filter_output[i] = self.filter_output[i].view(-1, self.flattened_features_size // self.num_filters)
-            # the output of each filter feed into linear layer
-            feats = F.relu(self.linear_layers[i](self.filter_output[i]))
-            feature_layer_list.append(feats)
+            # Pass through the corresponding linear layer and apply ReLU
+            feature_vec = F.relu(self.linear_layers[i](flattened_map))
+            feature_vectors.append(feature_vec)
 
-        # concat the features from each filter together
-        self.feature_layer = torch.cat(feature_layer_list, 1)
+        # Concatenate the resulting feature vectors from all filters
+        # Shape -> (batch_size * time_sequence, total_features)
+        concatenated_features = torch.cat(feature_vectors, dim=1)
 
-        feature_layer = self.feature_layer.view(
+        # Reshape to re-introduce the time sequence dimension
+        # Shape -> (batch_size, time_sequence, total_features)
+        feature_layer = concatenated_features.view(
             batch_size, self.time_sequence, self.total_features)
 
-        return feature_layer  # (time_Sequence, batch_size, total_features)
+        return feature_layer
 
     def count_params(self):
         """Return back how many params CNN_head have."""
@@ -185,8 +188,8 @@ class ConvolutionHead_ResNet(nn.Module):
         self.in_channel = 24
         # layer before Residual Block input image (66, 200)
         # wyw: (66, 200) → (1, 480, 640)
-        self.conv1 = nn.Sequential(
-            nn.Conv2d(1, 24, kernel_size=5, stride=1, padding=1, bias=False),
+        self.conv1 = nn.Sequential( # Use img_dim[0] for input channels
+            nn.Conv2d(img_dim[0], 24, kernel_size=5, stride=1, padding=1, bias=False),
             nn.BatchNorm2d(24),  # (64,198)
             nn.ReLU(inplace=True),
             nn.MaxPool2d(kernel_size=2, stride=2) # After (24, 239, 319) -> (24, 119, 159)
@@ -309,7 +312,7 @@ class ConvolutionHead_AlexNet(nn.Module):
         self.num_filters = num_filters
         self.features_per_filter = features_per_filter
         self.conv = nn.Sequential(  # wyw: (66, 200) → (1, 480, 640)
-            nn.Conv2d(1, 24, kernel_size=5, stride=1, padding=2, bias=True),
+            nn.Conv2d(img_dim[0], 24, kernel_size=5, stride=1, padding=2, bias=True),
             nn.BatchNorm2d(24),
             nn.ReLU(inplace=True),
             nn.MaxPool2d(kernel_size=2, stride=2),  # After (240, 320)
@@ -405,6 +408,7 @@ class ConvolutionHead_AlexNet(nn.Module):
 if __name__ == "__main__":
     # Test with 3 channels and 480x640 resolution
     input_dim_test = (1, 480, 640)
+    # input_dim_test = (3, 480, 640)
     time_seq_test = 16
     num_filters_test = 32
     features_per_filter_test = 4
