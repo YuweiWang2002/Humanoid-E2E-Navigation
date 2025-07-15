@@ -15,11 +15,8 @@ import cv2
 
 ######################################################
 def make_dirs(directory_name):   # directory_name
-    """Create a new directory."""
-    for i, p_p in enumerate(directory_name.split("/")):
-        p_p = "/".join(directory_name.split("/")[:i]) + "/" + p_p
-        if not os.path.isdir(p_p):
-            os.mkdir(p_p)
+    """Create a directory, including any necessary parent directories."""
+    os.makedirs(directory_name, exist_ok=True)
 
 
 ######################################################

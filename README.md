@@ -1,118 +1,118 @@
-# End-to-End Learning using CNN,CNN+LSTM, CNN+GRU, CNN+CT-GRU, CNN+NCP 
+# 人形机器人端到端循迹与避障项目
 
-This repo provides the code of end-to-end learning in autonomous driving using different network structures. It includes network structure implementation, data collection, data processing, network training, test of trained policies , visualization of results.
+本项目旨在构建一个端到端的深度学习模型，使人形机器人在高人流密度的复杂场景（如机器人大会会场）中，能够实现稳健、平滑的自主循迹与动态避障功能。
+
+## 核心任务
+
+通过学习人类专家的驾驶数据，模型直接从传感器输入映射到机器人的运动控制指令，实现“所见即所行”的端到端导航。
+
+### 模型输入
+
+模型采用多模态输入，以全面感知周围环境和自身状态：
+
+1.  **深度图像 (必需)**:
+    *   来源: 人形机器人头部 Realsense 相机。
+    *   规格: 640x480, 单通道。
+    *   作用: 提供场景的三维空间信息，用于检测障碍物和可通行区域。
+2.  **定位与朝向数据 (必需)**:
+    *   来源: UWB 定位系统（提供二维坐标 `x, y`）和机器人自身IMU（提供航向角 `yaw`）【这个地方我有点忘了yaw是怎么计算出来的，到底是绝对的朝向(在UWB提供的世界坐标系中)还是机器人自身坐标系下的。】。
+    *   处理: 在数据处理阶段，这些原始数据被转换为相对于下一个路径点的 **目标距离** 和 **目标方向角**。这两个值作为模型的直接输入，引导机器人朝目标前进。
+3.  **RGB 视觉图像 (可选)**:
+    *   来源: 人形机器人头部 Realsense 相机。
+    *   规格: 640x480, 三通道。
+    *   作用: 可以选择性地加入训练，为模型提供更丰富的环境纹理信息。项目初期为了降低对视觉的依赖和模型的复杂性，主要依赖深度图。
+
+### 模型输出
+
+模型直接输出机器人底盘的实时速度指令：
+
+*   **线速度 (vel_x, vel_y)**: 机器人在其自身坐标系下的前向和侧向速度。
+*   **角速度 (vel_yaw)**: 机器人的旋转速度。
 
 
 ## **Getting Started**
 ### Requirements
 - python 3.8 
-- the following dependencies (see below for an instruction to install them)
-    - torch
-    - torchvision
-    - matplotlib==3.4.2
-    - numpy==1.21.2
-    - pandas==1.3.0
-    - seaborn==0.11.1
-    - h5py==3.3.0
-    - pillow==8.3.1
-    - opencv-python
+- PyTorch
+- torchvision
+- matplotlib==3.4.2
+- numpy==1.21.2
+- pandas==1.3.0
+- seaborn==0.11.1
+- h5py==3.3.0
+- pillow==8.3.1
+- opencv-python
 
-### First steps (Ubuntu)
+### 环境安装
 
-Clone the repository
-
-`git clone https://gitlab.lrz.de/braindrive/bio_inspired_end_to_end.git`
-
-Create the virtual environment and install all dependencies
-
-`cd bio_inspired_end_to_end`  
-`source setup.sh`
+pip install -r requirements.txt
 
 
-## **Network Structures**
 
-In the folder `nets`, script `cnn_head.py` implements CNN used in the combination of CNN+RNN; script `models_all.py` implements CNN, LSTM, GRU, CT-GRU, NCP; script `ltc_cell.py` implements the LTC neuron used in NCP.
-In the project folder, script `wiring.py` defines how the LTC neurons are connected in NCP. 
+## **网络结构**
 
-## **Data Collection**
-Two datasets are used in this project:
-One dataset is [CARLA driving data](http://rpg.ifi.uzh.ch/RAMNet.html), which is provided by Gehrig et al.
-The other dataset is LGSVL driving data, collected by oneself in simulator LGSVL, using ros2 node to subscribe the images and the actions, script `ros_collect.py` is used in the ros package, to save LGSVL driving data in local folders.
+本项目的核心网络结构是一个多模态的 **CNN-RNN** 混合模型，旨在同时处理视觉空间信息和时间序列数据。
 
-## **Data processing**
+1.  **CNN (卷积神经网络)**:
+    *   负责处理输入的 640x480 深度图。
+    *   网络内部包含下采样层，以适应高分辨率输入，有效提取环境的空间特征。
+    *   输出128维。
+2.  **MLP (多层感知机)**:
+    *   负责处理 **[目标距离, 目标方向角]** 这二维的引导数据。
+    *   将该低维数据映射到一个高维特征空间（例如64维），使其能与视觉特征有效融合。
+    *   输出64维。
+3.  **特征融合**:
+    *   将 CNN 提取的视觉特征与 MLP 提取的引导特征进行拼接（Concatenate）。
+    *   共128+64=192维。
+4.  **RNN (循环神经网络, 如 LSTM/GRU)**:
+    *   接收融合后的特征向量序列。
+    *   通过其内部的记忆单元，捕捉机器人运动和环境变化的**时间依赖性**，使得决策更加平滑和具有预见性。
+5.  **输出层**:
+    *   一个全连接层，将 RNN 的输出解码为最终的 3 个速度控制指令 (`vel_x`, `vel_y`, `vel_yaw`)。
 
-In order to accelerate the training by improving the I/O speed of images, the collected data needs to be converted into HDF5 format. 
-Script `hdf5_format_carla_data.py` is used to convert CARLA driving data into HDF5 format and script `hdf5_format_lgsvl_data.py` is used to convert LGSVL driving data into HDF5 format.     
-To convert the format, run    
-`python hdf5_format_carla_data.py --type argument` or `python hdf5_format_lgsvl_data.py --type argument`  
-possible options of argument: train, valid, test for converting CARLA data; train, valid for converting LGSVL data.  
-__Notice__: every time when converting data version, ensure there is no HDF5 file with the same name in the target folder.  
+## **数据与处理**
 
-## **Network Training**
-### Compare different convolutional head 
-The comparison is peformed by training CNN+NCP in predicting steering, throttle, brake using CARLA driving data, Three CNN head are compared, they are NvidiaCNN, AlexNet, ResNet, implemented in `cnn_head.py`.  
-Train networks by executing train_for_cnn_comp.py, run  
-`python train_for_cnn_comp.py --cluster xxx --name xxx --epoch xxx --batch xxx --sequence xxx --hdf5 xxx --cnn_head xxx --seed xxx`  
-Explanation of the arguments: cluster --> if using gpu or not; name --> file name to save results; epoch --> desired training epochs; batch --> the batch size; sequence --> time sequence length for NCP; hdf5 --> read data in original format or in hdf5; cnn_head --> the used type of CNN head; seed --> random seed for neural network initialization.
+### 数据采集
+数据通过 ROS 在真实机器人上采集。由人类专家遥控机器人，同时记录下传感器数据和对应的控制指令。
 
-### Train CNN, CNN+LSTM, CNN+GRU, CNN+CT-GRU, CNN+NCP
-Using CARLA driving data and LGSVL driving data to train CNN, CNN+LSTM, CNN+GRU, CNN+CT-GRU, CNN+NCP
-run  
-`python train_all_models.py --cluster xxx --data xxx --network xxx --name xxx --epoch xxx --batch xxx --sequence xxx --hidden xxx --output xxx --seed xxx`  
-Explanation of the arguments: cluster --> if using gpu or not; data --> Carla driving data or LGSVL driving data; network --> which network to be trained; name --> file name to save results; epoch --> desired training epochs; batch --> the batch size; sequence --> time sequence length for LSTM/GRU/CT-GRU/NCP; hidden --> hidden state of LSTM/GRU/CT-GRU; output --> output dimensions,1 means predicting only steering, 3 means predicting steering, throttle, brake; seed --> random seed for neural network initialization.
+### 数据格式
+采集的每一条轨迹都存储在一个 `.csv` 文件中，例如 `data/processed/trajectory_1.csv`。文件格式如下：
 
-
-## **Test the trained policies**
-
-### Performance of different CNN head in combination with NCP
-To compare different CNN heads, the absolute deviation is calculated, run  
-`python calculate_deviation_cnn_head.py  --cluster yes`  
-The latency of each combination of CNN+NCP is calculated, run  
-`python latency_cnn_head.py`  
-
-### Performance of trained networks by using CARLA data  
-
-Sequential plot of commands is done to check the trained policy by using Carla driving data.
-To plot the sequential commands, run  
-`python sequential_plot_all.py  --cluster yes` for the models predicting steering, throttle and brake  
-`python sequential_plot_steering.py  --cluster yes` for the models predicting only steering  
-
-The latency of all neural networks is calculated, run
-`python latency_all_models.py`  
-
-### Performance of trained networks by using LGSVL data  
-Online simulation in simulator LGSVL, script `ros_control.py`  aims to run in the ros package to drive the vehicle in simulator LGSVL.  
+```csv
+depth_filename,rgb_filename,distance_to_target,angle_to_target,vel_x,vel_y,vel_yaw
+depth/1752480911478.png,rgb/1752480911478.png,2.870,-0.317,0.604,0.0,-0.150
+...
+```
+*   `depth_filename`: 深度图像文件路径。
+*   `rgb_filename`: RGB图像文件路径。
+*   `distance_to_target`: 当前位置到下一个目标点的距离（米）。
+*   `angle_to_target`: 机器人当前朝向与目标点方向之间的夹角（弧度）。
+*   `vel_x`, `vel_y`, `vel_yaw`: 专家在该时刻输入的控制指令，作为训练标签（Ground Truth）。
 
 
-## **Results visualization**
-Folder `Visualization` contains all the scripts for visualization.
-To visualize the action distribution of Carla driving data, run  
-`python Visualization/action_distribution_carla.py --cluster yes`  
+## **模型训练**
 
-To visualize the action distribution of LGSVL driving data, run  
-`python Visualization/action_distribution_lgsvl.py --cluster yes`   
+推荐使用 `train.sh` 脚本来启动模型训练。该脚本封装了 `train_all_models.py` 的常用参数，方便您快速开始。
 
-To plot histograms and boxplots of absolute deviation for CNN head comparison, run  
-`python Visualization/deviation_analysis_cnn_head.py --cluster yes`   
+```bash
+# 1. 根据您的需求，编辑 train.sh 文件中的参数。
+# 2. 在终端中运行以下命令开始训练：
+bash train.sh
+```
 
-To plot histograms and boxplots of absolute deviation for all 5 neural networks, run  
-`python Visualization/deviation_analysis_all_models.py --cluster yes`  
+**参数说明:**
+*   `--data_path`: 包含所有 `trajectory_*.csv` 文件的目录。
+*   `--model_name`: 本次训练模型的保存名称。
+*   `--epochs`: 训练轮次。
+*   `--batch_size`: 批处理大小。
+*   `--sequence_length`: 输入到RNN的时间序列长度。
+*   `--use_gpu`: 是否使用GPU进行训练。
 
-To plot the loss curves of different CNN heads in combination with NCP, run  
-`python Visualization/carla_loss_cnn_head.py --cluster yes --seed xxx`, possible seeds are 100, 150, 200.
- 
-To plot the loss curves of predicting steering, throttle, brake and loss curves of predicting steering in one plot, run  
-`python Visualization/carla_loss_comparison.py --cluster yes --seed xxx`, possible seeds are 100, 150, 200.
+## **模型测试与部署**
 
-To plot the loss curves of different neural networks in one plot, run  
-`python Visualization/carla_loss_all_models.py --cluster yes --seed xxx`  for training on CARLA data  
-`python Visualization/lgsvl_loss_all_models.py --cluster yes --seed xxx`  for training on LGSVL data  
-Possible seeds are 100, 150, 200.
-
-
-To plot the boxplots of absolute deviation in steering between models predicting steering, throttle, brake and models predicting only steering, run    
-`python Visualization/all_vs_steering.py --cluster yes`  
- 
-
-
-### 
+训练好的模型可以部署到机器人上进行在线测试。
+1.  编写一个 `ros_control.py` 的ROS节点。
+2.  该节点加载训练好的PyTorch模型。
+3.  订阅机器人发布的传感器话题（深度图、UWB、IMU等）。
+4.  在回调函数中进行数据预处理，将数据送入模型进行推理。
+5.  将模型输出的速度指令发布到机器人的 `cmd_vel` 话题，控制机器人运动。
