@@ -1,0 +1,59 @@
+# ===================================================================
+# Gitignore for Python & PyTorch Machine Learning Projects
+# ===================================================================
+
+# --- Python & Environment Files ---
+# Byte-compiled / optimized / C-extensions
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+
+# --- IDE & Editor Configuration ---
+.vscode/
+.idea/
+.ipynb_checkpoints/
+
+# --- OS Generated Files ---
+# macOS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+
+# Windows
+Thumbs.db
+
+# ===================================================================
+# Project-Specific Ignores
+# ===================================================================
+
+# 1. Data Files
+# Raw and processed data (images, csv, etc.) should not be versioned with Git.
+# Your README should explain how users can obtain or generate the data.
+data/
+
+# 2. Training Results & Models
+# Trained models, checkpoints, logs, and visualizations are build artifacts, not source code.
+results/
+
+# 3. Log files
+*.log
+
+# 4. Temporary Files
+*.tmp
+*~
