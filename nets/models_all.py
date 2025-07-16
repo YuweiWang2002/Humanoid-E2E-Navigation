@@ -17,119 +17,6 @@ from nets.cnn_head import ConvolutionHead_Nvidia, ConvolutionHead_ResNet, Convol
 from nets.mlp_head import MLPHead
 
 
-
-class Convolution_Model(nn.Module):
-    """This class defines CNN baseline."""
-
-    def __init__(self, img_dim, a_dim, use_cuda=True):
-        """Initialize the object."""
-        super(Convolution_Model, self).__init__()
-        self.device = torch.device("cuda"
-                                   if use_cuda and torch.cuda.is_available()
-                                   else "cpu")
-        self.loss = nn.MSELoss(reduction='mean')
-
-        # Save image dimension information
-        self.img_channel = img_dim[0]
-        self.img_height = img_dim[1]
-        self.img_width = img_dim[2]
-
-        self.conv = nn.Sequential(
-            # Output: (24, ~238, ~318)
-            nn.Conv2d(self.img_channel, 24, kernel_size=5, stride=2, bias=True),
-            nn.ReLU(inplace=True),
-            # Output: (36, ~118, ~158)
-            nn.Conv2d(24, 36, kernel_size=5, stride=2, bias=True),
-            nn.ReLU(inplace=True),
-            # Output: (48, ~58, ~78)
-            nn.Conv2d(36, 48, kernel_size=5, stride=2, bias=True),
-            nn.ReLU(inplace=True),
-            # New: Aggressive downsampling here
-            # Output: (64, ~28, ~38)
-            nn.Conv2d(48, 64, kernel_size=3, stride=2, bias=True), # Increased stride
-            nn.ReLU(inplace=True),
-            # New: More downsampling
-            # Output: (64, ~13, ~18) - Check exact calculation due to small dims
-            nn.Conv2d(64, 64, kernel_size=3, stride=2, bias=True), # Increased stride
-            nn.ReLU(inplace=True)
-        )
-        self.dropout1 = nn.Dropout(p=0.5)
-        self.dropout2 = nn.Dropout(p=0.5)
-        self.dropout3 = nn.Dropout(p=0.5)
-
-        # Dynamically calculate the input feature number for the linear1 layer
-        with torch.no_grad():
-            dummy_input = torch.zeros(1, self.img_channel, self.img_height, self.img_width)
-            output_features = self.conv(dummy_input)
-            self.flattened_features_size = output_features.view(output_features.size(0), -1).size(1)
-            print(f"Convolution_Model - Calculated flattened_features_size for linear1: {self.flattened_features_size}")
-
-        self.linear1 = nn.Linear(self.flattened_features_size, 100)
-        self.linear2 = nn.Linear(100, 50)
-        self.linear3 = nn.Linear(50, 10)
-        self.linear4 = nn.Linear(10, a_dim)
-        self.a_dim = a_dim
-
-        self.exp_factor = 0.1
-        self.optimizer = optim.Adam(self.parameters(), lr=1e-4)
-
-    def forward(self, x):
-        x = _image_standardization(x)
-        x = x.view(-1, self.img_channel, self.img_height, self.img_width)
-        x = self.conv(x)
-        x = x.view(-1, self.flattened_features_size)
-        x = self.dropout1(x)
-        x = F.relu(self.linear1(x))
-        x = self.dropout2(x)
-        x = F.relu(self.linear2(x))
-        x = self.dropout3(x)
-        x = F.relu(self.linear3(x))
-        x = self.linear4(x)
-        return x
-
-    def criterion(self, a_imitator, a_exp):
-        loss = self.loss(a_imitator, a_exp)
-        return loss
-
-    def weighted_criterion(self, a_imitator, a_exp):
-        assert self.exp_factor >= 0
-        weights = torch.exp(torch.abs(a_exp) * self.exp_factor)
-        error = a_imitator - a_exp
-        return torch.sum(weights * torch.square(error)) / torch.sum(weights)
-
-    def release(self, sdir):
-        torch.save(self.state_dict(), sdir + "policy_model.pth")
-        torch.save(self.optimizer.state_dict(), sdir + "policy_optim.pth")
-
-    def load(self, ldir):
-        try:
-            self.load_state_dict(
-                torch.load(
-                    ldir + "policy_model.pth",
-                    map_location=torch.device('cpu')
-                )
-            )
-            self.optimizer.load_state_dict(
-                torch.load(
-                    ldir + "policy_optim.pth",
-                    map_location=torch.device('cpu')
-                )
-            )
-            print("load parameters are in" + ldir)
-            return True
-        except Exception as e:
-            print(f"parameters are not loaded. Error: {e}")
-            return False
-
-    def count_params(self):
-        num_params = sum(param.numel() for param in self.parameters())
-        return num_params
-
-    def nn_structure(self):
-        dict_layer = {i: self._modules[i] for i in self._modules.keys()}
-        return dict_layer
-
-
 class BaseRNNModel(nn.Module):
     """A base class for RNN models to handle multi-modal feature fusion."""
 
@@ -549,14 +436,20 @@ if __name__ == "__main__":
     print("--- Starting Model Functionality Quick Check ---")
 
     # Define common parameters
-    image_channels, image_height, image_width = (1, 480, 640) # Single image shape (C, H, W)
-    s = (image_channels, image_height, image_width)
+    depth_channels, depth_height, depth_width = (1, 480, 640) # Single depth shape (C, H, W)
+    s = (depth_channels, depth_height, depth_width)
+    
+    # Optional RGB input shape (if available)
+    image_channels, image_height, image_width = (3, 480, 640) # RGB shape (C, H, W)
+    s_rgb = (image_channels, image_height, image_width)
+
+    use_rgb = True # Set to True if RGB input is available, otherwise False
     
     output_actions_dim = 3 # Model output action dimension (e.g., steering, throttle, brake)
     a = output_actions_dim # Corresponds to Convolution_Model's 'a' parameter
 
-    time_sequence_length = 8 # Sequence length, i.e., number of frames
-    batch_size = 2            # Batch size
+    time_sequence_length = 16 # Sequence length, i.e., number of frames
+    batch_size = 4            # Batch size
 
     # Parameters for RNN models
     hidden_size_rnn = 64      # Hidden size for GRU/LSTM
@@ -565,104 +458,127 @@ if __name__ == "__main__":
     M_ctgru = 8               # Number of trajectories for CTGRU
     
     # Prepare dummy input data
-    # For Convolution_Model, input is a single image: (batch_size, channels, height, width)
-    dummy_single_image_input = torch.randn(batch_size, image_channels, image_height, image_width)
-    print(f"\nDummy single image input shape (C_Model): {dummy_single_image_input.shape}")
-
     # For RNN models with CNN_Head, input is an image sequence: (batch_size, time_sequence, channels, height, width)
     dummy_sequence_images_input = torch.randn(
-        batch_size, time_sequence_length, image_channels, image_height, image_width
+        batch_size, time_sequence_length, depth_channels, depth_height, depth_width
     )
     # For multi-modal RNNs, we also need state data
     dummy_state_data_input = torch.randn(batch_size, time_sequence_length, state_input_dim)
-    print(f"Dummy state data input shape: {dummy_state_data_input.shape}")
-
+    
     print(f"Dummy image sequence input shape (CNN_Head + RNN): {dummy_sequence_images_input.shape}")
+    print(f"Dummy state data input shape: {dummy_state_data_input.shape}")
     print("-" * 40)
 
-    # 1. Initialize and test Convolution_Model (stand-alone CNN model)
+    # 1. Initialize Feature Extraction Heads
+    print("Initializing Feature Extraction Heads...")
+
+    # Initialize Depth CNN Heads
+    depth_head_nvidia, depth_head_resnet, depth_head_alexnet = None, None, None
     try:
-        print("Testing Convolution_Model...")
-        policy1 = Convolution_Model(s, a)
-        output_policy1 = policy1(dummy_single_image_input)
-        print(f"  Input shape: {dummy_single_image_input.shape}")
-        print(f"  Convolution_Model Output shape: {output_policy1.shape}")
-        expected_shape = (batch_size, output_actions_dim)
-        assert output_policy1.shape == expected_shape, f"Shape mismatch! Expected: {expected_shape}, Actual: {output_policy1.shape}"
-        print(f"  Convolution_Model test passed! Parameters: {policy1.count_params():,}")
+        depth_head_nvidia = ConvolutionHead_Nvidia(s, time_sequence=time_sequence_length, num_filters=32, features_per_filter=4)
+        print(f"  Depth CNN Head (Nvidia) initialized. Output features: {depth_head_nvidia.total_features}")
+        depth_head_resnet = ConvolutionHead_ResNet(s, time_sequence=time_sequence_length, num_filters=32, features_per_filter=4)
+        print(f"  Depth CNN Head (ResNet) initialized. Output features: {depth_head_resnet.total_features}")
+        depth_head_alexnet = ConvolutionHead_AlexNet(s, time_sequence=time_sequence_length, num_filters=32, features_per_filter=4)
+        print(f"  Depth CNN Head (AlexNet) initialized. Output features: {depth_head_alexnet.total_features}")
     except Exception as e:
-        print(f"  Convolution_Model test failed! Error: {e}")
-    print("-" * 40)
+        print(f"  Depth CNN Head initialization failed! Error: {e}")
+        if not depth_head_nvidia:
+            print("Nvidia初始化失败")
+        if not depth_head_resnet:
+            print("Resnet初始化失败")
+        if not depth_head_alexnet:
+            print("Alexnet初始化失败")
 
-    # 2. Initialize Feature Extractor Heads
-    print("Initializing Feature Extractor Heads...")
+    # Initialize RGB CNN Heads (Optional)
+    rgb_head_nvidia, rgb_head_resnet, rgb_head_alexnet = None, None, None
+    if use_rgb:  # Only initialize if RGB input shape is defined
+        try:
+            rgb_head_nvidia = ConvolutionHead_Nvidia(s_rgb, time_sequence=time_sequence_length, num_filters=32, features_per_filter=4)
+            print(f"  RGB CNN Head (Nvidia) initialized. Output features: {rgb_head_nvidia.total_features}")
+            rgb_head_resnet = ConvolutionHead_ResNet(s_rgb, time_sequence=time_sequence_length, num_filters=32, features_per_filter=4)
+            print(f"  RGB CNN Head (ResNet) initialized. Output features: {rgb_head_resnet.total_features}")
+            rgb_head_alexnet = ConvolutionHead_AlexNet(s_rgb, time_sequence=time_sequence_length, num_filters=32, features_per_filter=4)
+            print(f"  RGB CNN Head (AlexNet) initialized. Output features: {rgb_head_alexnet.total_features}")
+        except Exception as e:
+            print(f"  RGB CNN Head initialization failed! Error: {e}")
+            if not rgb_head_nvidia:
+                print("Nvidia初始化失败")
+            if not rgb_head_resnet:
+                print("Resnet初始化失败")
+            if not rgb_head_alexnet:
+                print("Alexnet初始化失败")
+    else:
+        print("  RGB input shape not defined, skipping RGB CNN Head initialization.")
+
+    # Initialize State MLP Head
+    mlp_head = None
     try:
-        # Head for Depth Images (1 channel)
-        depth_head = ConvolutionHead_Nvidia(
-            s,
-            time_sequence=time_sequence_length,
-            num_filters=32,
-            features_per_filter=4 
-        )
-        print(f"  Depth CNN Head (Nvidia) initialized. Output features: {depth_head.total_features}")
-
-        # Head for RGB Images (3 channels) - optional
-        s_rgb = (3, image_height, image_width)
-        rgb_head = ConvolutionHead_Nvidia(
-            s_rgb,
-            time_sequence=time_sequence_length,
-            num_filters=32,
-            features_per_filter=4
-        )
-        print(f"  RGB CNN Head (Nvidia) initialized. Output features: {rgb_head.total_features}")
-
-        # Head for State Data
         mlp_head = MLPHead(input_dim=state_input_dim, output_dim=64)
         print(f"  State MLP Head initialized. Output features: {mlp_head.output_dim}")
-
     except Exception as e:
-        print(f"  Head initialization failed! Error: {e}")
-        depth_head, rgb_head, mlp_head = None, None, None
+        print(f"  State MLP Head initialization failed! Error: {e}")
+
+    all_heads = [depth_head_nvidia, depth_head_resnet, depth_head_alexnet,
+                 rgb_head_nvidia, rgb_head_resnet, rgb_head_alexnet, mlp_head]
+    if not any(all_heads):  # Check if all heads are None
+        print("All head initializations failed. Please check dependencies and configurations.")
+
     print("-" * 40)
+
 
     # 3. Test RNN Models with Fused Features
     rnn_models = {
         'LSTM_Model': LSTM_Model,
         'GRU_Model': GRU_Model,
-        'CTGRU_Model': CTGRU_Model
+        'CTGRU_Model': CTGRU_Model,
     }
 
-    if all(h is not None for h in [depth_head, rgb_head, mlp_head]):
-        for rnn_name, RnnModelClass in rnn_models.items():
-            print(f"\n  Testing {rnn_name} with Fused Features...")
-            # Test case 1: Depth + State
-            print("    - Scenario 1: Depth + State")
-            model_ds = RnnModelClass(
-                depth_cnn_head=depth_head, state_mlp_head=mlp_head,
-                time_step=time_sequence_length, hidden_size=hidden_size_rnn, output=output_actions_dim
-            ) if rnn_name != 'CTGRU_Model' else CTGRU_Model(
-                num_units=num_units_ctgru, conv_head=depth_head,
-                depth_cnn_head=depth_head, state_mlp_head=mlp_head,
-                time_step=time_sequence_length, output=output_actions_dim
-            )
-            output_ds = model_ds(dummy_sequence_images_input, dummy_state_data_input)
-            assert output_ds.shape == (batch_size, time_sequence_length, output_actions_dim)
-            print(f"      Input size: {model_ds.total_input_size}, Output shape: {output_ds.shape} -> OK")
 
-            # Test case 2: Depth + State + RGB
-            print("    - Scenario 2: Depth + State + RGB")
-            dummy_rgb_input = torch.randn(batch_size, time_sequence_length, 3, image_height, image_width)
-            model_dsr = RnnModelClass(
-                depth_cnn_head=depth_head, state_mlp_head=mlp_head, rgb_cnn_head=rgb_head,
-                time_step=time_sequence_length, hidden_size=hidden_size_rnn, output=output_actions_dim
-            ) if rnn_name != 'CTGRU_Model' else CTGRU_Model(
-                num_units=num_units_ctgru, conv_head=depth_head,
-                depth_cnn_head=depth_head, state_mlp_head=mlp_head, rgb_cnn_head=rgb_head,
-                time_step=time_sequence_length, output=output_actions_dim
-            )
-            output_dsr = model_dsr(dummy_sequence_images_input, dummy_state_data_input, dummy_rgb_input)
-            assert output_dsr.shape == (batch_size, time_sequence_length, output_actions_dim)
-            print(f"      Input size: {model_dsr.total_input_size}, Output shape: {output_dsr.shape} -> OK")
-            print(f"      Total params: {model_dsr.count_params():,}")
+    # Function to test RNN models with given heads
+    def test_rnn_models(depth_head_arg, rgb_head_arg, head_type):
+        if all(h is not None for h in [depth_head_arg, mlp_head]):  # Ensure required heads are initialized
+            for rnn_name, RnnModelClass in rnn_models.items():
+                print(f"\n  Testing {rnn_name} with {head_type} Heads (Depth + State)...")
+                # Test case 1: Depth + State
+                print("    - Scenario 1: Depth + State")
+                model_ds = RnnModelClass(
+                    depth_cnn_head=depth_head_arg, state_mlp_head=mlp_head,
+                    time_step=time_sequence_length, hidden_size=hidden_size_rnn, output=output_actions_dim
+                ) if rnn_name != 'CTGRU_Model' else CTGRU_Model(
+                    num_units=num_units_ctgru, conv_head=depth_head_arg,  # conv_head is a legacy argument
+                    depth_cnn_head=depth_head_arg, state_mlp_head=mlp_head,
+                    time_step=time_sequence_length, output=output_actions_dim
+                )
+                output_ds = model_ds(dummy_sequence_images_input, dummy_state_data_input)
+                assert output_ds.shape == (batch_size, time_sequence_length, output_actions_dim)
+                print(f"      Input size: {model_ds.total_input_size}, Output shape: {output_ds.shape} -> OK")
+                print(f"      Total params: {model_ds.count_params():,}")
+
+            # Test RGB only if the corresponding RGB head and the general RGB input shape (s_rgb) are available:
+            if use_rgb and all(h is not None for h in [rgb_head_arg, mlp_head]):
+                for rnn_name, RnnModelClass in rnn_models.items():
+                    print(f"\n  Testing {rnn_name} with {head_type} Heads (Depth + State + RGB)...")
+                    print("    - Scenario 2: Depth + State + RGB")
+                    dummy_rgb_input = torch.randn(batch_size, time_sequence_length, 3, image_height, image_width)
+                    model_dsr = RnnModelClass(
+                        depth_cnn_head=depth_head_arg, state_mlp_head=mlp_head, rgb_cnn_head=rgb_head_arg,
+                        time_step=time_sequence_length, hidden_size=hidden_size_rnn, output=output_actions_dim
+                    ) if rnn_name != 'CTGRU_Model' else CTGRU_Model(
+                        num_units=num_units_ctgru, conv_head=depth_head_arg,
+                        depth_cnn_head=depth_head_arg, state_mlp_head=mlp_head, rgb_cnn_head=rgb_head_arg,
+                        time_step=time_sequence_length, output=output_actions_dim
+                    )
+                    output_dsr = model_dsr(dummy_sequence_images_input, dummy_state_data_input, dummy_rgb_input)
+                    assert output_dsr.shape == (batch_size, time_sequence_length, output_actions_dim)
+                    print(f"      Input size: {model_dsr.total_input_size}, Output shape: {output_dsr.shape} -> OK")
+                    print(f"      Total params: {model_dsr.count_params():,}")
+        else:
+            print(f"  Skipping tests for {head_type} heads due to initialization failure.")
+
+    # Run tests for each type of CNN head
+    test_rnn_models(depth_head_nvidia, rgb_head_nvidia, "Nvidia")
+    test_rnn_models(depth_head_resnet, rgb_head_resnet, "ResNet")
+    test_rnn_models(depth_head_alexnet, rgb_head_alexnet, "AlexNet")
 
     print("\n--- All Model Functionality Quick Checks Completed! ---")

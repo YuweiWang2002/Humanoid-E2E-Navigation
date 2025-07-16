@@ -51,9 +51,13 @@ data/
 # Trained models, checkpoints, logs, and visualizations are build artifacts, not source code.
 results/
 
-# 3. Log files
+# 3. wandb files
+# We use Weights & Biases for experiment tracking, so we ignore its local files.
+wandb/
+
+# 4. Log files
 *.log
 
-# 4. Temporary Files
+# 5. Temporary Files
 *.tmp
 *~
