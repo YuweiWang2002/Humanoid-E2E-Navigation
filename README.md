@@ -94,18 +94,9 @@ depth/1752480911478.png,rgb/1752480911478.png,2.870,-0.317,0.604,0.0,-0.150
 推荐使用 `train.sh` 脚本来启动模型训练。该脚本封装了 `train_all_models.py` 的常用参数，方便您快速开始。
 
 ```bash
-# 1. 根据您的需求，编辑 train.sh 文件中的参数。
-# 2. 在终端中运行以下命令开始训练：
 bash train.sh
 ```
 
-**参数说明:**
-*   `--data_path`: 包含所有 `trajectory_*.csv` 文件的目录。
-*   `--model_name`: 本次训练模型的保存名称。
-*   `--epochs`: 训练轮次。
-*   `--batch_size`: 批处理大小。
-*   `--sequence_length`: 输入到RNN的时间序列长度。
-*   `--use_gpu`: 是否使用GPU进行训练。
 
 ## **模型测试与部署**
 
