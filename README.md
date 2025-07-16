@@ -39,14 +39,13 @@
 - numpy==1.21.2
 - pandas==1.3.0
 - seaborn==0.11.1
-- h5py==3.3.0
 - pillow==8.3.1
 - opencv-python
 
 ### 环境安装
-
+```bash
 pip install -r requirements.txt
-
+```
 
 
 ## **网络结构**
