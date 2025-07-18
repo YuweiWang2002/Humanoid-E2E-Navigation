@@ -1,0 +1,107 @@
+# ===================================================================
+# Base Configuration for Humanoid E2E Navigation
+# ===================================================================
+
+# -------------------------------------------------------------------
+# 1. Experiment Setup
+# -------------------------------------------------------------------
+run_name: "GRU_Depth_State_Run1"  # Name of the experiment, used for saving results
+use_cuda: true                    # Use GPU if available
+seed: 42                          # Random seed for reproducibility
+
+# -------------------------------------------------------------------
+# 2. Data Parameters
+# -------------------------------------------------------------------
+data:
+  # Paths will be relative to the project root
+  raw_data_dir: "data/raw"
+  processed_data_dir: "data/processed"
+  
+  # Input modalities
+  use_depth: true
+  use_rgb: false
+  use_state: true
+
+  # Image dimensions
+  depth_img_shape: [1, 480, 640] # [channels, height, width]
+  rgb_img_shape: [3, 480, 640]   # [channels, height, width]
+
+  # State vector dimension
+  state_dim: 5 # e.g., [distance, angle, vel_x, vel_y, vel_yaw]
+
+  # Sequence length for RNNs
+  time_step: 16
+
+# -------------------------------------------------------------------
+# 3. Training Parameters
+# -------------------------------------------------------------------
+training:
+  epochs: 100
+  batch_size: 32
+  learning_rate: 0.0001
+  weight_decay: 0.0
+  resume: false # Resume training from the latest checkpoint
+  num_workers: 0 # Set to 0 for Windows compatibility
+  eval_interval: 0.1 # Evaluate every this fraction of an epoch
+
+  # Data splitting
+  validation_split: 0.2
+
+  # Loss function configuration
+  loss_function: "MSELoss" # or "WeightedMSELoss"
+  # exp_factor is used only for WeightedMSELoss
+  weighted_loss_exp_factor: 0.1
+
+  # Early stopping settings
+  early_stopping:
+    enabled: true
+    mode: "patience" # Mode for early stopping
+    min_value: true  # True if lower validation loss is better
+    length: 10       # Corresponds to patience
+
+# -------------------------------------------------------------------
+# 4. Model Architecture
+# -------------------------------------------------------------------
+model:
+  # Main recurrent core of the model. Options: "GRU", "LSTM", "CTGRU"
+  rnn_type: "GRU"
+  
+  # Output dimension (e.g., number of actions)
+  output_dim: 3
+
+  # --- Feature Extractor Heads ---
+  heads:
+    # CNN head for depth images. Options: "Nvidia", "ResNet", "AlexNet"
+    depth_cnn_head: "Nvidia"
+    # CNN head for RGB images. Options: "Nvidia", "ResNet", "AlexNet"
+    rgb_cnn_head: "Nvidia" 
+    
+    # Parameters for all CNN heads
+    cnn:
+      num_filters: 32
+      features_per_filter: 4
+
+    # Parameters for the state data MLP head
+    mlp:
+      output_dim: 64
+
+  # --- RNN Core Parameters ---
+  rnn_params:
+    # For GRU and LSTM
+    hidden_size: 64
+
+    # For CTGRU
+    ctgru:
+      num_units: 64
+      M: 8 # Number of memory traces
+      delta_t: 0.04 # Time interval for updates
+
+# -------------------------------------------------------------------
+# 5. Logging and Saving
+# -------------------------------------------------------------------
+logging:
+  # Directory to save model checkpoints and results, relative to project root
+  results_dir: "results"
+  # WandB logging
+  use_wandb: true
+  wandb_project_name: "Humanoid-E2E-Navigation"

@@ -1,3 +1,4 @@
+
 """
 Generates a dummy dataset for testing the humanoid navigation task.
 
@@ -26,13 +27,17 @@ def create_dummy_csv(output_dir, filename, num_points=50, hz=10):
     """
     print(f"--- Generating dummy CSV: {filename} ---")
     
-    # Simulate a slightly randomized trajectory
     data = []
     current_time = int(time.time() * 1000) # Millisecond timestamp
     x, y, yaw = np.random.rand(3) * np.array([2, 2, np.pi]) # Random start pose
-    vel_x_sim = 0.4 + np.random.rand() * 0.2  # 0.4 to 0.6 m/s
-    vel_yaw_sim = (np.random.rand() - 0.5) * 0.4 # -0.2 to 0.2 rad/s
+    
+    # Simulate a simple, slightly varying velocity profile
+    base_vel_x = 0.4 + np.random.rand() * 0.2  # 0.4 to 0.6 m/s
+    base_vel_yaw = (np.random.rand() - 0.5) * 0.4 # -0.2 to 0.2 rad/s
     dt = 1.0 / hz
+
+    # Store previous pose to calculate velocity
+    prev_x, prev_y, prev_yaw = x, y, yaw
 
     for i in range(num_points):
         timestamp = current_time + int(i * dt * 1000)
@@ -41,19 +46,56 @@ def create_dummy_csv(output_dir, filename, num_points=50, hz=10):
         depth_filename = f"depth/{timestamp}.png"
         rgb_filename = f"rgb/{timestamp}.png"
 
+        # Calculate current velocity based on pose change
+        # This simulates the velocity that would be in /odom
+        current_vel_x = (x - prev_x) / dt
+        current_vel_y = (y - prev_y) / dt
+        current_vel_yaw = (yaw - prev_yaw) / dt
+
+        # The "label" is the command that *caused* this state change.
+        # For dummy data, we'll assume the command was the velocity we aimed for.
+        cmd_vel_x = base_vel_x + np.sin(i * 0.1) * 0.1 # Add some variation
+        cmd_vel_y = 0.0 # Assume no sideways command
+        cmd_vel_yaw = base_vel_yaw
+
         data.append({
             'depth_filename': depth_filename,
             'rgb_filename': rgb_filename,
             'x': x,
             'y': y,
-            'yaw': yaw
+            'yaw': yaw,
+            'current_vel_x': current_vel_x,
+            'current_vel_y': current_vel_y,
+            'current_vel_yaw': current_vel_yaw,
+            'cmd_vel_x': cmd_vel_x,
+            'cmd_vel_y': cmd_vel_y,
+            'cmd_vel_yaw': cmd_vel_yaw
         })
 
-        # Update pose for the next step
-        x += vel_x_sim * dt
-        yaw += vel_yaw_sim * dt
+        # Update previous pose for next iteration's velocity calculation
+        prev_x, prev_y, prev_yaw = x, y, yaw
+
+        # Update pose for the next step based on the "commanded" velocity
+        x += cmd_vel_x * np.cos(yaw) * dt
+        y += cmd_vel_x * np.sin(yaw) * dt
+        yaw += cmd_vel_yaw * dt
 
     df = pd.DataFrame(data)
+    
+    # Define target as the last point in the trajectory
+    target_x, target_y = df['x'].iloc[-1], df['y'].iloc[-1]
+    
+    # Calculate distance and angle to target for each point
+    dx = target_x - df['x']
+    dy = target_y - df['y']
+    df['distance_to_target'] = np.sqrt(dx**2 + dy**2)
+    
+    # Angle of the target relative to the robot's current orientation
+    angle_to_target_global = np.arctan2(dy, dx)
+    df['angle_to_target'] = angle_to_target_global - df['yaw']
+    # Normalize angle to be within [-pi, pi]
+    df['angle_to_target'] = np.arctan2(np.sin(df['angle_to_target']), np.cos(df['angle_to_target']))
+
     csv_path = os.path.join(output_dir, filename)
     df.to_csv(csv_path, index=False)
     
@@ -105,7 +147,7 @@ def main():
         print("-" * 20)
 
     print(f"\nDummy dataset generation complete! Created {NUM_TRAJECTORIES} trajectories.")
-    print(f"You can now test 'preprocess_data.py' using '{raw_data_dir}' as the input directory.")
+    print(f"The CSVs now contain the required 5D state and 3D command labels.")
 
 if __name__ == '__main__':
     main()
