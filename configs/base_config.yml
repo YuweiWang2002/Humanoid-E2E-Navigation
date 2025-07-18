@@ -59,6 +59,11 @@ training:
     min_value: true  # True if lower validation loss is better
     length: 10       # Corresponds to patience
 
+  # Gradient Clipping
+  gradient_clipping:
+    enabled: true
+    max_norm: 1.0
+
 # -------------------------------------------------------------------
 # 4. Model Architecture
 # -------------------------------------------------------------------

@@ -60,7 +60,19 @@ pip install -r requirements.txt
 
 2.  **预处理数据**: 选择必要的列，并将数据保存到已处理文件夹中。
     ```bash
-    python preprocess_data.py --input_dir data/raw --output_dir data/processed
+    python preprocess_data.py
+    ```
+
+### 数据归一化 (重要)
+
+本项目采用在线/增量标准化的方式来处理数据，特别是深度图。这允许我们在数据不断增加（例如，从仿真到真实世界）的情况下，动态更新全局的均值和标准差，以保证数据分布的稳定性。
+
+- **统计文件**: 归一化参数（均值、标准差）被保存在根目录的 `depth_normalization.json` 文件中。
+- **更新统计数据**: 当你添加了大量新的、不同分布的数据后，你应该更新这些统计数据。使用 `--update_stats` 标志来运行训练脚本，此时脚本会先遍历所有训练数据来计算新的统计量，然后才开始训练。
+
+    ```bash
+    # 推荐在第一次训练或添加新场景数据后运行此命令
+    python train_all_models.py --config configs/base_config.yml --update_stats
     ```
 
 ---
@@ -75,7 +87,7 @@ pip install -r requirements.txt
     *   若要进行一个全新的实验，你可以复制 `base_config.yml` 并重命名（例如 `configs/lstm_experiment.yml`），然后修改它。
 
 2.  **开始训练**:
-    *   运行训练脚本，并指定你想要使用的配置文件。
+    *   运行训练脚本，并指定你想要使用的配置文件。如果不是第一次训练，则无需带 `--update_stats` 标志。
 
     ```bash
     python train_all_models.py --config configs/base_config.yml

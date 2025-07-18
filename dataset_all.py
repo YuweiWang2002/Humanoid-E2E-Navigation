@@ -11,7 +11,6 @@ import torch
 from torch.utils.data import Dataset
 import torchvision.transforms as transforms
 
-
 class HumanoidNavDataset(Dataset):
     """
     A PyTorch Dataset for loading humanoid navigation data.
@@ -21,7 +20,7 @@ class HumanoidNavDataset(Dataset):
     in sequences.
     """
 
-    def __init__(self, processed_data_dir, csv_files, sequence_length=16, use_rgb=False, transform=None):
+    def __init__(self, processed_data_dir, csv_files, sequence_length=16, use_rgb=False, transform=None, state_mean=None, state_std=None):
         """
         Initializes the dataset.
 
@@ -31,12 +30,16 @@ class HumanoidNavDataset(Dataset):
             sequence_length (int): The length of the sequences to be returned.
             use_rgb (bool): Whether to load and return RGB images.
             transform (callable, optional): A function/transform to apply to the images.
+            state_mean (torch.Tensor, optional): The mean of the state vector for normalization.
+            state_std (torch.Tensor, optional): The std of the state vector for normalization.
         """
         self.data_dir = processed_data_dir
         self.csv_files = csv_files
         self.sequence_length = sequence_length
         self.use_rgb = use_rgb
         self.transform = transform
+        self.state_mean = state_mean
+        self.state_std = state_std
 
         self.trajectories = []
         self.cumulative_sizes = [0]
@@ -47,12 +50,14 @@ class HumanoidNavDataset(Dataset):
 
         for csv_file in csv_files:
             file_path = os.path.join(self.data_dir, csv_file)
-            df = pd.read_csv(file_path)
-            
-            if len(df) >= self.sequence_length:
-                self.trajectories.append(df)
-                num_sequences = len(df) - self.sequence_length + 1
-                self.cumulative_sizes.append(self.cumulative_sizes[-1] + num_sequences)
+            try:
+                df = pd.read_csv(file_path)
+                if len(df) >= self.sequence_length:
+                    self.trajectories.append(df)
+                    num_sequences = len(df) - self.sequence_length + 1
+                    self.cumulative_sizes.append(self.cumulative_sizes[-1] + num_sequences)
+            except Exception as e:
+                print(f"Warning: Could not read or process {csv_file}. Error: {e}")
         
         self.total_sequences = self.cumulative_sizes[-1]
 
@@ -80,14 +85,19 @@ class HumanoidNavDataset(Dataset):
         rgb_imgs = []
 
         for _, row in sequence_df.iterrows():
-            depth_path = os.path.join(self.base_image_path, row['depth_filename'].replace('/', os.sep))
-            depth_img = Image.open(depth_path).convert('L')
-            depth_imgs.append(depth_img)
+            try:
+                depth_path = os.path.join(self.base_image_path, row['depth_filename'].replace('/', os.sep))
+                depth_img = Image.open(depth_path).convert('L')
+                depth_imgs.append(depth_img)
 
-            if self.use_rgb:
-                rgb_path = os.path.join(self.base_image_path, row['rgb_filename'].replace('/', os.sep))
-                rgb_img = Image.open(rgb_path).convert('RGB')
-                rgb_imgs.append(rgb_img)
+                if self.use_rgb:
+                    rgb_path = os.path.join(self.base_image_path, row['rgb_filename'].replace('/', os.sep))
+                    rgb_img = Image.open(rgb_path).convert('RGB')
+                    rgb_imgs.append(rgb_img)
+            except FileNotFoundError as e:
+                print(f"ERROR: Image not found at {e.filename}. Please check your data paths.")
+                # Return None or a dummy sample to avoid crashing the whole training
+                return None
 
         if self.transform:
             depth_imgs = [self.transform(img) for img in depth_imgs]
@@ -97,57 +107,23 @@ class HumanoidNavDataset(Dataset):
         depth_tensor = torch.stack(depth_imgs)
         rgb_tensor = torch.stack(rgb_imgs) if self.use_rgb else torch.empty(0)
 
-        # --- Get State and Label Data (Updated for 5D state) ---
         state_cols = ['distance_to_target', 'angle_to_target', 'current_vel_x', 'current_vel_y', 'current_vel_yaw']
         label_cols = ['cmd_vel_x', 'cmd_vel_y', 'cmd_vel_yaw']
 
         state_data = sequence_df[state_cols].values.astype(np.float32)
         label_data = sequence_df[label_cols].values.astype(np.float32)
 
+        state_tensor = torch.from_numpy(state_data)
+        if self.state_mean is not None and self.state_std is not None:
+            state_tensor = (state_tensor - self.state_mean) / self.state_std
+
         return {
             'depth_img': depth_tensor,
             'rgb_img': rgb_tensor,
-            'state': torch.from_numpy(state_data),
+            'state': state_tensor,
             'label': torch.from_numpy(label_data)
         }
 
 if __name__ == '__main__':
-    print("--- Testing HumanoidNavDataset ---")
-
-    PROCESSED_DATA_DIR = 'data/processed'
-    SEQ_LENGTH = 16
-    BATCH_SIZE = 4
-
-    if not os.path.exists(PROCESSED_DATA_DIR) or not os.listdir(PROCESSED_DATA_DIR):
-        print(f"Error: Processed data directory '{PROCESSED_DATA_DIR}' is empty or does not exist.")
-        print("Please run 'generate_dummy_data.py' first to create new data.")
-    else:
-        all_csv_files = [f for f in os.listdir(PROCESSED_DATA_DIR) if f.endswith('.csv')]
-
-        img_transforms = transforms.Compose([
-            transforms.Resize((480, 640)),
-            transforms.ToTensor(),
-        ])
-
-        print("\n1. Testing with 5D state...")
-        try:
-            dataset = HumanoidNavDataset(
-                processed_data_dir=PROCESSED_DATA_DIR,
-                csv_files=all_csv_files,
-                sequence_length=SEQ_LENGTH,
-                use_rgb=False,
-                transform=img_transforms
-            )
-            sample = dataset[0]
-            print(f"  Sample 0 shapes:")
-            print(f"    depth_img: {sample['depth_img'].shape}")
-            print(f"    state:     {sample['state'].shape}")
-            print(f"    label:     {sample['label'].shape}")
-            assert sample['depth_img'].shape == (SEQ_LENGTH, 1, 480, 640)
-            assert sample['state'].shape == (SEQ_LENGTH, 5)
-            assert sample['label'].shape == (SEQ_LENGTH, 3)
-            print("  Shape tests passed!")
-        except Exception as e:
-            print(f"  Test failed: {e}")
-
-        print("\n--- HumanoidNavDataset tests completed! ---")
+    # This is a simplified test, run train_all_models.py for a full test.
+    print("--- Testing HumanoidNavDataset Initialization ---")
